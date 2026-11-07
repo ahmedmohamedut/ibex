@@ -503,6 +503,7 @@ fn fixture(args: &FixtureArgs) -> Result<()> {
     let root = FixtureBackup::new()
         .with_device_name("Fixture iPhone")
         .with_installed_app("net.whatsapp.WhatsApp")
+        .with_sample_media()
         .with_file("HomeDomain", "Library/Preferences/com.apple.nope.plist", b"x")
         .with_file("HomeDomain", "Library/SMS/Drafts/draft.plist", b"draft")
         .with_file("MediaDomain", "Library/SMS/Attachments/ab/01/IMG_0001.HEIC", b"heic")

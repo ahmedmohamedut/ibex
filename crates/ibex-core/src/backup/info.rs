@@ -11,12 +11,14 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use plist::Value;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::error::{BackupError, Result};
 
 /// Everything we know about a backup before reading its manifest.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct BackupInfo {
     /// The name the user gave the device.
     pub device_name: Option<String>,

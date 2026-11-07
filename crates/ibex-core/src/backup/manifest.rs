@@ -14,19 +14,22 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
 use plist::Value;
 use rusqlite::{Connection, OpenFlags, Row};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::error::{BackupError, Result};
 use crate::page::{Page, Paged};
 use crate::util::{nskeyedarchiver, paths, time};
 
 /// What a manifest row describes, from the `flags` column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub enum EntryKind {
     File,
     Directory,
@@ -56,8 +59,9 @@ impl EntryKind {
 }
 
 /// Filesystem metadata, decoded from the archived `MBFile` in the `file` blob.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct FileMeta {
     pub size: u64,
     pub mtime: Option<DateTime<Utc>>,
@@ -119,8 +123,9 @@ impl FileMeta {
 }
 
 /// One row of the `Files` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct ManifestEntry {
     pub file_id: String,
     pub domain: String,
@@ -159,8 +164,9 @@ impl ManifestEntry {
 }
 
 /// A domain and what it holds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct DomainSummary {
     pub domain: String,
     pub file_count: u64,
@@ -173,8 +179,14 @@ pub struct DomainSummary {
 }
 
 /// An open, read-only connection to a backup's `Manifest.db`.
+///
+/// The connection sits behind a `Mutex` because `rusqlite::Connection` is
+/// `Send` but not `Sync`, and the app shares one open backup across threads:
+/// Tauri commands run on blocking workers and the `ibex://` protocol serves
+/// files from its own thread. Reads here are short and indexed, so serializing
+/// them costs little next to keeping `Backup` shareable.
 pub struct Manifest {
-    conn: Connection,
+    conn: Mutex<Connection>,
     /// Whether the `file` blob column exists. Checked once, at open.
     has_file_column: bool,
 }
@@ -226,7 +238,7 @@ impl Manifest {
         }
         Ok(Self {
             has_file_column: columns.iter().any(|c| c == "file"),
-            conn,
+            conn: Mutex::new(conn),
         })
     }
 
@@ -269,7 +281,8 @@ impl Manifest {
             "SELECT {} FROM Files WHERE domain = ?1 AND relativePath = ?2 LIMIT 1",
             self.entry_columns()
         );
-        let mut stmt = self.conn.prepare(&sql)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query((domain, relative_path))?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_entry(row)?)),
@@ -283,7 +296,8 @@ impl Manifest {
             "SELECT {} FROM Files WHERE fileID = ?1",
             self.entry_columns()
         );
-        let mut stmt = self.conn.prepare(&sql)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query([file_id])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_entry(row)?)),
@@ -315,7 +329,7 @@ impl Manifest {
         let total = {
             let sql = format!("SELECT count(*) FROM Files WHERE {PREDICATE}");
             let n: i64 =
-                self.conn
+                self.conn()
                     .query_one(&sql, rusqlite::params![domain, &prefix, &deeper], |r| {
                         r.get(0)
                     })?;
@@ -328,7 +342,8 @@ impl Manifest {
              LIMIT ?4 OFFSET ?5",
             cols = self.entry_columns(),
         );
-        let mut stmt = self.conn.prepare(&sql)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
         let items = stmt
             .query_and_then(
                 rusqlite::params![
@@ -349,7 +364,8 @@ impl Manifest {
     ///
     /// Cheap: one `GROUP BY`. Sizes need [`Self::domains_with_sizes`].
     pub fn domains(&self) -> Result<Vec<DomainSummary>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT domain, count(*) FROM Files WHERE domain IS NOT NULL \
              GROUP BY domain ORDER BY domain",
         )?;
@@ -381,9 +397,8 @@ impl Manifest {
 
         let total_rows = self.count_files()?;
         let mut sizes: HashMap<String, u64> = HashMap::new();
-        let mut stmt = self
-            .conn
-            .prepare("SELECT domain, file FROM Files WHERE flags = 1")?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT domain, file FROM Files WHERE flags = 1")?;
         let mut rows = stmt.query([])?;
         let mut done = 0u64;
         while let Some(row) = rows.next()? {
@@ -413,14 +428,14 @@ impl Manifest {
     /// Number of rows in the manifest.
     pub fn count_files(&self) -> Result<u64> {
         let n: i64 = self
-            .conn
+            .conn()
             .query_one("SELECT count(*) FROM Files", [], |r| r.get(0))?;
         Ok(n.max(0) as u64)
     }
 
     /// Number of rows in one domain.
     pub fn count_in_domain(&self, domain: &str) -> Result<u64> {
-        let n: i64 = self.conn.query_one(
+        let n: i64 = self.conn().query_one(
             "SELECT count(*) FROM Files WHERE domain = ?1",
             [domain],
             |r| r.get(0),
@@ -428,9 +443,20 @@ impl Manifest {
         Ok(n.max(0) as u64)
     }
 
-    /// Borrow the underlying connection, for structure-only queries.
-    pub fn connection(&self) -> &Connection {
-        &self.conn
+    /// Run a closure with the underlying connection, for queries this module
+    /// does not wrap — the integration tests' structure-only checks, for
+    /// instance.
+    pub fn with_connection<T>(&self, f: impl FnOnce(&Connection) -> T) -> T {
+        f(&self.conn())
+    }
+
+    /// Lock the connection.
+    ///
+    /// A poisoned lock means a previous query panicked. The connection is still
+    /// usable for reads, and failing every later query would be worse than
+    /// carrying on, so the guard is recovered.
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

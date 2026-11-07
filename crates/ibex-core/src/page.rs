@@ -4,10 +4,12 @@
 //! See AGENTS.md ("Paginate anything that can be large").
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// A request for one window of results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct Page {
     pub offset: u64,
     pub limit: u32,
@@ -49,8 +51,9 @@ impl Default for Page {
 }
 
 /// One window of results, plus enough information to ask for the next.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct Paged<T> {
     pub items: Vec<T>,
     /// Total number of items available, when it is cheap to know.

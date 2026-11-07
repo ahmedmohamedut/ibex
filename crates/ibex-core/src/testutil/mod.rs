@@ -173,6 +173,28 @@ impl FixtureBackup {
         self
     }
 
+    /// Add one of each sample file, for exercising the previews.
+    ///
+    /// Lands in `HomeDomain` under `Library/IbexSamples/`.
+    pub fn with_sample_media(self) -> Self {
+        const DIR: &str = "Library/IbexSamples";
+        self.with_file("HomeDomain", &format!("{DIR}/tone.wav"), &samples::wav(5))
+            .with_file("HomeDomain", &format!("{DIR}/pixel.png"), &samples::png())
+            .with_file(
+                "HomeDomain",
+                &format!("{DIR}/preferences.plist"),
+                &samples::binary_plist(),
+            )
+            .with_file("HomeDomain", &format!("{DIR}/notes.txt"), &samples::text())
+            .with_file("HomeDomain", &format!("{DIR}/data.json"), &samples::json())
+            // No extension and no magic bytes: exercises the hex view.
+            .with_file(
+                "HomeDomain",
+                &format!("{DIR}/opaque"),
+                &[0u8, 1, 2, 255, 254, 253, 0, 7],
+            )
+    }
+
     /// Add a manifest row whose bytes are deliberately absent.
     pub fn with_phantom_file(mut self, domain: &str, relative_path: &str, size: u64) -> Self {
         self.entries.push(FixtureEntry {
@@ -197,7 +219,17 @@ impl FixtureBackup {
 
         self.write_plists(&root)?;
 
-        let conn = Connection::open(root.join("Manifest.db"))?;
+        // Building into a directory that already holds a fixture replaces it,
+        // so a builder call is idempotent and tests can rebuild in place.
+        let manifest_db = root.join("Manifest.db");
+        for suffix in ["", "-wal", "-shm"] {
+            let path = root.join(format!("Manifest.db{suffix}"));
+            if path.exists() {
+                std::fs::remove_file(&path).at(&path)?;
+            }
+        }
+
+        let conn = Connection::open(&manifest_db)?;
         conn.execute_batch(
             "CREATE TABLE Files (
                  fileID       TEXT PRIMARY KEY,
@@ -455,6 +487,127 @@ fn class_dict(name: &str, hierarchy: &[&str]) -> Value {
     Value::Dictionary(dict)
 }
 
+/// Generators for small, valid sample files.
+///
+/// Real media, synthesized rather than committed, so previews and the media
+/// protocol can be exercised without shipping binaries in the repo or using
+/// anyone's data.
+pub mod samples {
+    use plist::{Dictionary, Value};
+
+    /// A playable mono 8-bit PCM WAV of `seconds` duration at 8 kHz, holding a
+    /// quiet 440 Hz tone.
+    ///
+    /// Long enough to seek in, which is what makes it useful: scrubbing it in
+    /// the UI is what proves the media protocol's Range support works.
+    pub fn wav(seconds: u32) -> Vec<u8> {
+        const RATE: u32 = 8_000;
+        let samples = RATE * seconds;
+        let data_len = samples; // one byte per sample
+        let mut out = Vec::with_capacity(44 + data_len as usize);
+
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_len).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&1u16.to_le_bytes()); // mono
+        out.extend_from_slice(&RATE.to_le_bytes());
+        out.extend_from_slice(&RATE.to_le_bytes()); // byte rate
+        out.extend_from_slice(&1u16.to_le_bytes()); // block align
+        out.extend_from_slice(&8u16.to_le_bytes()); // bits per sample
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+
+        for i in 0..samples {
+            // 440 Hz sine, scaled quietly around the 8-bit midpoint.
+            let t = f64::from(i) / f64::from(RATE);
+            let v = (t * 440.0 * std::f64::consts::TAU).sin() * 40.0;
+            out.push((128.0 + v) as u8);
+        }
+        out
+    }
+
+    /// A 1x1 opaque PNG, built chunk by chunk with correct CRCs.
+    pub fn png() -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = 0xffff_ffffu32;
+            for &byte in bytes {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+                }
+            }
+            !crc
+        }
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut crc_input = kind.to_vec();
+            crc_input.extend_from_slice(data);
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+        }
+
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        // 1x1, 8-bit, greyscale
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&1u32.to_be_bytes());
+        ihdr.extend_from_slice(&1u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 0, 0, 0, 0]);
+        chunk(&mut out, b"IHDR", &ihdr);
+        // One zlib-wrapped stored block: filter byte 0 plus one pixel.
+        let raw = [0u8, 0x80];
+        let mut idat = vec![0x78, 0x01, 0x01, 0x02, 0x00, 0xfd, 0xff];
+        idat.extend_from_slice(&raw);
+        let adler = {
+            let mut a = 1u32;
+            let mut b = 0u32;
+            for &byte in &raw {
+                a = (a + u32::from(byte)) % 65_521;
+                b = (b + a) % 65_521;
+            }
+            (b << 16) | a
+        };
+        idat.extend_from_slice(&adler.to_be_bytes());
+        chunk(&mut out, b"IDAT", &idat);
+        chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    /// A binary property list with a few typed values, as iOS writes them.
+    pub fn binary_plist() -> Vec<u8> {
+        let mut dict = Dictionary::new();
+        dict.insert("Label".into(), Value::String("fixture preference".into()));
+        dict.insert("Count".into(), Value::Integer(42.into()));
+        dict.insert("Enabled".into(), Value::Boolean(true));
+        dict.insert(
+            "Items".into(),
+            Value::Array(vec![
+                Value::String("first".into()),
+                Value::String("second".into()),
+            ]),
+        );
+        let mut out = Vec::new();
+        Value::Dictionary(dict)
+            .to_writer_binary(&mut out)
+            .expect("a dictionary of plain values always serializes");
+        out
+    }
+
+    /// A few lines of plain text.
+    pub fn text() -> Vec<u8> {
+        b"ibex synthetic fixture\nline two\nline three, with a tab\there\n".to_vec()
+    }
+
+    /// A small JSON document.
+    pub fn json() -> Vec<u8> {
+        br#"{"source":"ibex fixture","values":[1,2,3],"nested":{"ok":true}}"#.to_vec()
+    }
+}
+
 /// A `-wal` / `-shm` suffix and the bytes of that sidecar.
 type Sidecar = (&'static str, Vec<u8>);
 
@@ -638,6 +791,105 @@ mod tests {
         let names: Vec<_> = listing.items.iter().map(|e| e.name()).collect();
         assert!(names.contains(&"sms.db"));
         assert!(names.contains(&"sms.db-wal"));
+    }
+
+    #[test]
+    fn the_sample_wav_is_a_valid_riff_file() {
+        let wav = samples::wav(2);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        // Declared RIFF size must match the real one.
+        let declared = u32::from_le_bytes(wav[4..8].try_into().unwrap());
+        assert_eq!(declared as usize, wav.len() - 8);
+        // Declared data size must match the samples that follow.
+        assert_eq!(&wav[36..40], b"data");
+        let data_len = u32::from_le_bytes(wav[40..44].try_into().unwrap());
+        assert_eq!(data_len as usize, wav.len() - 44);
+        assert_eq!(data_len, 8_000 * 2, "8 kHz mono, one byte per sample");
+        // And it must sniff as audio, which is what the preview switches on.
+        let sniffed = crate::util::mime::sniff(&wav, "tone.wav");
+        assert_eq!(sniffed.preview, crate::util::mime::PreviewKind::Audio);
+    }
+
+    #[test]
+    fn the_sample_png_is_a_valid_png() {
+        let png = samples::png();
+        assert_eq!(
+            &png[0..8],
+            &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
+        );
+        assert_eq!(&png[12..16], b"IHDR");
+        assert!(png.ends_with(b"\x00\x00\x00\x00IEND\xae\x42\x60\x82"));
+
+        // Walk the chunks and verify every CRC, so a malformed sample cannot
+        // pass as a working image.
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = 0xffff_ffffu32;
+            for &byte in bytes {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+                }
+            }
+            !crc
+        }
+        let mut at = 8;
+        let mut chunks = 0;
+        while at + 12 <= png.len() {
+            let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+            let body = &png[at + 4..at + 8 + len];
+            let stored = u32::from_be_bytes(png[at + 8 + len..at + 12 + len].try_into().unwrap());
+            assert_eq!(crc32(body), stored, "bad CRC in chunk {chunks}");
+            at += 12 + len;
+            chunks += 1;
+        }
+        assert_eq!(chunks, 3, "IHDR, IDAT, IEND");
+        assert_eq!(at, png.len());
+
+        let sniffed = crate::util::mime::sniff(&png, "pixel.png");
+        assert_eq!(sniffed.mime, "image/png");
+    }
+
+    #[test]
+    fn the_sample_plist_round_trips_to_readable_xml() {
+        let bytes = samples::binary_plist();
+        assert!(bytes.starts_with(b"bplist"));
+        let xml = crate::util::plist_text::to_xml(&bytes).unwrap();
+        assert!(xml.contains("<key>Label</key>"));
+        assert!(xml.contains("<integer>42</integer>"));
+    }
+
+    #[test]
+    fn sample_media_lands_in_the_backup_and_sniffs_correctly() {
+        use crate::util::mime::PreviewKind;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = FixtureBackup::new()
+            .with_sample_media()
+            .build(tmp.path())
+            .unwrap();
+        let backup = open(&root);
+
+        let expected = [
+            ("tone.wav", PreviewKind::Audio),
+            ("pixel.png", PreviewKind::Image),
+            ("preferences.plist", PreviewKind::Plist),
+            ("notes.txt", PreviewKind::Text),
+            ("data.json", PreviewKind::Text),
+            ("opaque", PreviewKind::Binary),
+        ];
+        for (name, preview) in expected {
+            let entry = backup
+                .find("HomeDomain", &format!("Library/IbexSamples/{name}"))
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name} should be in the fixture"));
+            assert_eq!(
+                backup.sniff(&entry).unwrap().preview,
+                preview,
+                "{name} sniffed wrongly"
+            );
+        }
     }
 
     #[test]

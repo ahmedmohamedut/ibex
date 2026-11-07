@@ -18,7 +18,7 @@ pub use manifest::{DomainSummary, EntryKind, FileMeta, Manifest, ManifestEntry};
 use crate::cache::{self, CacheDir};
 use crate::error::{BackupError, IoResultExt, Result};
 use crate::page::{Page, Paged};
-use crate::util::paths;
+use crate::util::{mime, paths};
 use crate::workcopy::{SourceFiles, WorkCopy};
 
 /// A readable, seekable stream of one file's bytes.
@@ -254,6 +254,111 @@ impl Backup {
             name,
         };
         WorkCopy::materialize(&self.cache, &entry.file_id, &source)
+    }
+
+    /// Read at most `max_bytes` from the start of a file.
+    ///
+    /// For previews and sniffing: bounded, so a multi-gigabyte video cannot be
+    /// pulled into memory by a click.
+    pub fn read_prefix(&self, entry: &ManifestEntry, max_bytes: usize) -> Result<Vec<u8>> {
+        let path = self.materialize(entry)?;
+        let file = File::open(&path).at(&path)?;
+        let mut buf = Vec::new();
+        std::io::Read::take(file, max_bytes as u64)
+            .read_to_end(&mut buf)
+            .at(&path)?;
+        Ok(buf)
+    }
+
+    /// Read a window of bytes, for the hex view.
+    pub fn read_range(&self, entry: &ManifestEntry, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let path = self.materialize(entry)?;
+        let mut file = File::open(&path).at(&path)?;
+        file.seek(std::io::SeekFrom::Start(offset)).at(&path)?;
+        let mut buf = Vec::new();
+        std::io::Read::take(file, len as u64)
+            .read_to_end(&mut buf)
+            .at(&path)?;
+        Ok(buf)
+    }
+
+    /// Sniff an entry's content type, reading only a short prefix.
+    pub fn sniff(&self, entry: &ManifestEntry) -> Result<mime::Sniffed> {
+        let prefix = self.read_prefix(entry, mime::SNIFF_BYTES)?;
+        Ok(mime::sniff(&prefix, entry.name()))
+    }
+
+    /// The real size of an entry's bytes on disk.
+    ///
+    /// The manifest's recorded size can disagree with reality — a truncated
+    /// backup, for instance — and the media protocol must serve what is
+    /// actually there.
+    pub fn data_len(&self, entry: &ManifestEntry) -> Result<u64> {
+        let path = self.materialize(entry)?;
+        Ok(std::fs::metadata(&path).at(&path)?.len())
+    }
+
+    /// Copy a file out of the backup, restoring its modification time.
+    ///
+    /// This is the "Save as…" primitive; M4's `export::files` reuses it.
+    /// Returns the number of bytes written and whether the mtime was restored
+    /// (it cannot be when the manifest records none).
+    pub fn copy_file_to(&self, entry: &ManifestEntry, dest: &Path) -> Result<(u64, bool)> {
+        let source = self.materialize(entry)?;
+        if let Some(parent) = dest.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).at(parent)?;
+        }
+        let bytes = std::fs::copy(&source, dest).at(dest)?;
+
+        let mtime_restored = match entry.meta.as_ref().and_then(|m| m.mtime) {
+            Some(mtime) => {
+                let ft = filetime::FileTime::from_unix_time(
+                    mtime.timestamp(),
+                    mtime.timestamp_subsec_nanos(),
+                );
+                // A filesystem that refuses the timestamp should not fail the
+                // save: the bytes are already safely written.
+                filetime::set_file_mtime(dest, ft).is_ok()
+            }
+            None => false,
+        };
+        Ok((bytes, mtime_restored))
+    }
+
+    /// Total size of the backup on disk, in bytes.
+    ///
+    /// Walks the shard directories and sums real file sizes: `stat` calls only,
+    /// with no metadata blobs decoded, so it stays fast enough to call when a
+    /// backup is opened. That also makes it the true size of the folder rather
+    /// than the sum of the manifest's recorded sizes, which can disagree.
+    pub fn total_bytes(&self) -> Result<u64> {
+        fn walk(dir: &Path, total: &mut u64) -> Result<()> {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(source) => {
+                    return Err(crate::error::Error::Io {
+                        path: dir.to_path_buf(),
+                        source,
+                    });
+                }
+            };
+            for entry in entries {
+                let entry = entry.at(dir)?;
+                let meta = entry.metadata().at(entry.path())?;
+                if meta.is_dir() {
+                    walk(&entry.path(), total)?;
+                } else {
+                    *total += meta.len();
+                }
+            }
+            Ok(())
+        }
+        let mut total = 0;
+        walk(&self.root, &mut total)?;
+        Ok(total)
     }
 
     /// Delete everything cached for this backup.

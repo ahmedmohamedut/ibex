@@ -96,15 +96,15 @@ fn file_ids_match_the_hash_of_domain_and_path() {
 
     // Sample rows and recompute their IDs. This is the single assumption the
     // whole resolver rests on, so it is worth checking against real data.
-    let conn = backup.manifest().connection();
-    let mut stmt = conn
-        .prepare("SELECT fileID, domain, relativePath FROM Files LIMIT 500")
-        .unwrap();
-    let rows: Vec<(String, String, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
+    let rows: Vec<(String, String, String)> = backup.manifest().with_connection(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT fileID, domain, relativePath FROM Files LIMIT 500")
+            .unwrap();
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    });
     assert!(!rows.is_empty());
 
     let mut checked = 0;
