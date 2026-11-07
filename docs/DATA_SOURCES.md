@@ -199,3 +199,11 @@ Add dated notes here when a real backup contradicts or extends the above, e.g.:
 - `2026-11-07` M0: `plist` 1.10.3 both reads and **writes** real binary-plist UIDs, so the
   synthetic fixture produces genuine `NSKeyedArchiver` blobs with UID indirection rather
   than a flattened approximation.
+- `2026-11-07` M1: files in a backup have hashed, extensionless names, so content type has to be
+  sniffed from the bytes. Order used by `util::mime`: the plist magics first (`bplist`, and an XML
+  declaration or doctype mentioning `plist` — `infer` knows neither, and plists are everywhere in a
+  backup), then `infer`'s magic numbers, then `mime_guess` on the *manifest* name's extension, then
+  a UTF-8 text heuristic.
+- `2026-11-07` M1: WebKitGTK cannot decode HEIC/HEIF, so those sniff to a distinct
+  `PreviewKind::ImageUnsupported` and the UI explains itself instead of showing a broken image.
+  Same for TIFF and camera raw. M5's thumbnail service (libheif) is what fixes it.

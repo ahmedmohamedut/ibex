@@ -33,16 +33,29 @@ Notes:
 ## M1: App shell and Raw browser
 Goal: open a backup in the GUI and browse every file.
 
-- [ ] Tauri `AppState`, `open_backup`, `close_backup`, `recent_backups`, `list_domains`, `list_dir`, `file_info`
-- [ ] `ts-rs` bindings generation wired up; `src/api/` wrappers + TanStack Query
-- [ ] `ibex://` protocol: `file/` with Range support and sniffed Content-Type
-- [ ] Layout: top bar, sidebar, list/detail panes; tokens.css; light/dark
-- [ ] Welcome screen: open folder dialog, recents, validation errors
-- [ ] Overview screen (device info, domain count, total size)
-- [ ] Raw view: domain list, path tree, file table, previews (image, text, plist pretty-print, hex, audio/video, PDF)
-- [ ] "Save as…" for a single file (keeps original name and mtime)
+- [x] Tauri `AppState`, `open_backup`, `close_backup`, `recent_backups`, `list_domains`, `list_dir`, `file_info`
+- [x] `ts-rs` bindings generation wired up; `src/api/` wrappers + TanStack Query
+- [x] `ibex://` protocol: `file/` with Range support and sniffed Content-Type
+- [x] Layout: top bar, sidebar, list/detail panes; tokens.css; light/dark
+- [x] Welcome screen: open folder dialog, recents, validation errors
+- [x] Overview screen (device info, domain count, total size)
+- [~] Raw view: domain list, path tree, file table, previews (image, text, plist pretty-print, hex, audio/video, PDF) — all previews implemented; **HEIC shows an explanatory placeholder** rather than an image, because WebKitGTK cannot decode it. Conversion is M5's thumbnail work.
+- [x] "Save as…" for a single file (keeps original name and mtime)
 
 **Done when:** you can open your backup, browse to any file, preview it and save it out.
+
+Notes:
+- Added to the IPC contract (recorded in ARCHITECTURE.md): `backup_stats`, `save_file_as`,
+  `forget_recent`, `total_cache_size`. No documented signature changed. Overview's "total size"
+  comes from a disk walk rather than summing per-domain sizes, which would mean decoding every
+  metadata blob; per-domain sizes wait for M4's job system.
+- `Manifest` now holds its SQLite connection in a `Mutex`: `rusqlite::Connection` is `Send` but not
+  `Sync`, and the app shares one open backup across the command workers and the protocol thread.
+- Verified against synthetic fixtures only — still no real backup on this machine. 160 tests pass,
+  including 11 that drive the real IPC boundary through Tauri's mock runtime and a protocol
+  status/header matrix (200/206/416/404/405).
+- Not verified by me: the GUI's appearance and interaction. The React tree is proven to render
+  (server-side render smoke test) and the app launches cleanly, but a human needs to click through.
 
 ## M2: SMS / iMessage
 - [ ] Decide: `imessage-database` crate vs own parser (record decision + license impact in DATA_SOURCES.md and README)
