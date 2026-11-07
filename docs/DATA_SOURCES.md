@@ -63,7 +63,19 @@ Only needed when `Manifest.plist` → `IsEncrypted` is true. Overview of the sch
 4. `Manifest.plist` → `ManifestKey`: first 4 bytes little-endian = protection class, rest = wrapped key. Unwrap with that class key; decrypt `Manifest.db` with AES-256-CBC, zero IV.
 5. Per file: from the manifest `file` blob, `EncryptionKey` (skip first 4 bytes) unwrapped with the file's `ProtectionClass` key; decrypt the file with AES-256-CBC, zero IV; strip PKCS#7 padding, then truncate to `Size`.
 
-Crates: `pbkdf2`, `sha1`, `sha2`, `hmac`, `aes-kw`, `aes`, `cbc`. Reference implementation for cross-checking: the Python `iphone_backup_decrypt` project (read its logic; don't copy its code).
+Crates used (M7): `pbkdf2` 0.13 with the `hmac` feature, `sha1`, `sha2`, `aes-kw` 0.3, `aes` 0.9,
+`cbc` 0.2, `zeroize` 1.9. Known-answer tests cover the primitives: RFC 3394 §4.6 for the 256-bit
+unwrap and RFC 6070 for PBKDF2, so a dependency bump cannot silently change behaviour.
+
+Two practical notes from implementing it:
+
+- Decryption **truncates to the `Size` the manifest records** rather than trusting the PKCS#7
+  padding. It is free, and it cannot be fooled by a damaged final block. `Manifest.db` has no
+  recorded size, so there the padding is stripped, falling back to the raw blocks if it does not
+  validate.
+- The AES key wrap's integrity check is the only reliable wrong-password signal. CBC has none, so
+  a wrong key there yields plausible-looking garbage rather than an error — which is why the
+  password must be judged at the unwrap step and never by whether a file "looks right".
 
 Never persist the password. Keep unwrapped keys in memory only, zeroize on close (`zeroize` crate).
 

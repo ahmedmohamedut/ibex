@@ -18,3 +18,20 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# The real backup's keybag asks for ten million PBKDF2-HMAC-SHA256 rounds. An
+# unoptimized debug build takes ~16s over that, because the work is spread
+# across sha2, hmac, digest and block-buffer rather than sitting in one crate.
+# Optimizing every dependency, while leaving ibex's own crates at opt-level 0,
+# keeps `tauri dev` usable and debuggable. It also helps SQLite and, later,
+# image decoding.
+[profile.dev.package."*"]
+opt-level = 3
+
+# `pbkdf2_hmac::<Sha256>` is generic, so it is monomorphized *into* ibex-core
+# and compiled at ibex-core's own opt-level rather than pbkdf2's. At level 0
+# the ten million rounds take ~11s; at level 1 they take ~1s, which is close to
+# the ~0.8s a release build manages, and level 1 keeps line numbers and usable
+# backtraces.
+[profile.dev.package.ibex-core]
+opt-level = 1

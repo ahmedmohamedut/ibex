@@ -6,9 +6,17 @@ import {
 import { call } from "./client";
 import type { BackupStats } from "../bindings/BackupStats";
 import type { BackupSummary } from "../bindings/BackupSummary";
+import type { BackupPeek } from "../bindings/BackupPeek";
 import type { RecentBackup } from "../bindings/RecentBackup";
 
-/** Open a backup folder. `password` is for M7; an encrypted backup rejects for now. */
+/** Read a backup's metadata without opening it, to label the password prompt. */
+export function usePeekBackup() {
+  return useMutation({
+    mutationFn: (path: string) => call<BackupPeek>("peek_backup", { path }),
+  });
+}
+
+/** Open a backup folder, supplying `password` when it is encrypted. */
 export function useOpenBackup() {
   const queryClient = useQueryClient();
   return useMutation({

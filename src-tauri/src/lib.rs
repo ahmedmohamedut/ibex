@@ -13,6 +13,30 @@ pub mod state;
 
 use state::AppState;
 
+/// The command handler, as a macro so the real app and the integration tests
+/// cannot drift apart. Adding a command in one place adds it in both.
+#[macro_export]
+macro_rules! ibex_invoke_handler {
+    () => {
+        tauri::generate_handler![
+            $crate::commands::peek_backup,
+            $crate::commands::open_backup,
+            $crate::commands::close_backup,
+            $crate::commands::recent_backups,
+            $crate::commands::forget_recent,
+            $crate::commands::list_domains,
+            $crate::commands::list_dir,
+            $crate::commands::file_info,
+            $crate::commands::read_text_preview,
+            $crate::commands::read_hex_preview,
+            $crate::commands::backup_stats,
+            $crate::commands::save_file_as,
+            $crate::commands::clear_cache,
+            $crate::commands::total_cache_size,
+        ]
+    };
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -28,21 +52,7 @@ pub fn run() {
                 responder.respond(protocol::respond(&state, &request));
             });
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::open_backup,
-            commands::close_backup,
-            commands::recent_backups,
-            commands::forget_recent,
-            commands::list_domains,
-            commands::list_dir,
-            commands::file_info,
-            commands::read_text_preview,
-            commands::read_hex_preview,
-            commands::backup_stats,
-            commands::save_file_as,
-            commands::clear_cache,
-            commands::total_cache_size,
-        ])
+        .invoke_handler(ibex_invoke_handler!())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

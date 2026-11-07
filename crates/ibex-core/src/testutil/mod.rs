@@ -17,6 +17,8 @@
 //!     .unwrap();
 //! ```
 
+mod encryption;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -59,6 +61,9 @@ pub struct FixtureBackup {
     serial_number: String,
     backup_date: DateTime<Utc>,
     encrypted: bool,
+    /// Set by `encrypted_with_password`: the fixture's contents really are
+    /// encrypted with keys derived from this password.
+    password: Option<String>,
     installed_apps: Vec<String>,
     entries: Vec<FixtureEntry>,
 }
@@ -85,6 +90,7 @@ impl FixtureBackup {
                 .single()
                 .expect("1793491200 is a valid timestamp"),
             encrypted: false,
+            password: None,
             installed_apps: Vec::new(),
             entries: Vec::new(),
         }
@@ -120,13 +126,29 @@ impl FixtureBackup {
         self
     }
 
-    /// Mark the backup encrypted in `Manifest.plist`.
+    /// Mark the backup encrypted in `Manifest.plist` **without** encrypting
+    /// anything.
     ///
-    /// The contents are *not* encrypted: this exercises the detection and the
-    /// password-prompt path only. A fixture that really encrypts arrives with
-    /// milestone M7.
+    /// Only useful for exercising detection and the password prompt. For a
+    /// backup that really is encrypted, use [`Self::encrypted_with_password`].
     pub fn marked_encrypted(mut self) -> Self {
         self.encrypted = true;
+        self.password = None;
+        self
+    }
+
+    /// Really encrypt the fixture, the way a device does.
+    ///
+    /// Builds a genuine keybag, wraps each class key with a key derived from
+    /// `password`, and encrypts `Manifest.db` and every payload with
+    /// AES-256-CBC. This is the wrap-and-encrypt side of the scheme, written
+    /// for tests, and it is what makes the decrypt side trustworthy.
+    ///
+    /// The keybag uses low iteration counts so the suite stays fast; a real
+    /// backup's ten million rounds are only exercised by hand.
+    pub fn encrypted_with_password(mut self, password: &str) -> Self {
+        self.encrypted = true;
+        self.password = Some(password.to_string());
         self
     }
 
@@ -229,7 +251,25 @@ impl FixtureBackup {
             }
         }
 
-        let conn = Connection::open(&manifest_db)?;
+        // An encrypted fixture needs the keybag before any row is written,
+        // because each file's wrapped key goes into its own MBFile.
+        let crypt = match &self.password {
+            Some(password) => Some(encryption::Encryption::new(password)?),
+            None => None,
+        };
+
+        // Build the manifest in the scratch area. For an encrypted fixture the
+        // copy that lands in the backup folder is the ciphertext.
+        let plain_manifest = if crypt.is_some() {
+            scratch.join("Manifest.plain.db")
+        } else {
+            manifest_db.clone()
+        };
+        if plain_manifest.exists() {
+            std::fs::remove_file(&plain_manifest).at(&plain_manifest)?;
+        }
+
+        let conn = Connection::open(&plain_manifest)?;
         conn.execute_batch(
             "CREATE TABLE Files (
                  fileID       TEXT PRIMARY KEY,
@@ -251,6 +291,7 @@ impl FixtureBackup {
             }
         }
         for (domain, dir) in &dirs {
+            // Directories hold no bytes, so they get no file key.
             insert_row(&conn, domain, dir, 2, 0, 0o40_755, None)?;
         }
 
@@ -265,8 +306,20 @@ impl FixtureBackup {
                 }
             };
 
+            // Each file gets its own key, wrapped under a class key, exactly
+            // as iOS does. The plaintext length stays in the MBFile `Size`,
+            // which is what the decrypt path truncates to.
+            let key_blob = match (&crypt, &bytes) {
+                (Some(crypt), Some(_)) => Some(crypt.wrap_new_file_key(&entry.relative_path)?),
+                _ => None,
+            };
+
             if let Some(bytes) = &bytes {
-                write_payload(&root, &entry.domain, &entry.relative_path, bytes)?;
+                let stored = match (&crypt, &key_blob) {
+                    (Some(crypt), Some(blob)) => crypt.encrypt_for(blob, bytes)?,
+                    _ => bytes.clone(),
+                };
+                write_payload(&root, &entry.domain, &entry.relative_path, &stored)?;
             }
             insert_row(
                 &conn,
@@ -275,13 +328,21 @@ impl FixtureBackup {
                 1,
                 size,
                 0o100_644,
-                None,
+                key_blob.clone(),
             )?;
 
             // `-wal` / `-shm` are ordinary manifest entries of their own.
             for (suffix, bytes) in sidecars {
                 let path = format!("{}{}", entry.relative_path, suffix);
-                write_payload(&root, &entry.domain, &path, &bytes)?;
+                let sidecar_blob = match &crypt {
+                    Some(crypt) => Some(crypt.wrap_new_file_key(&path)?),
+                    None => None,
+                };
+                let stored = match (&crypt, &sidecar_blob) {
+                    (Some(crypt), Some(blob)) => crypt.encrypt_for(blob, &bytes)?,
+                    _ => bytes.clone(),
+                };
+                write_payload(&root, &entry.domain, &path, &stored)?;
                 insert_row(
                     &conn,
                     &entry.domain,
@@ -289,12 +350,20 @@ impl FixtureBackup {
                     1,
                     bytes.len() as u64,
                     0o100_644,
-                    None,
+                    sidecar_blob,
                 )?;
             }
         }
 
         drop(conn);
+
+        // Encrypt the finished manifest into the backup folder.
+        if let Some(crypt) = &crypt {
+            let plaintext = std::fs::read(&plain_manifest).at(&plain_manifest)?;
+            let ciphertext = crypt.encrypt_manifest(&plaintext)?;
+            std::fs::write(&manifest_db, &ciphertext).at(&manifest_db)?;
+        }
+
         // Leave no trace next to the backup.
         let _ = std::fs::remove_dir_all(&scratch);
         Ok(root)
@@ -335,8 +404,14 @@ impl FixtureBackup {
         manifest.insert("WasPasscodeSet".into(), Value::Boolean(true));
         manifest.insert("Version".into(), "10.0".into());
         manifest.insert("Date".into(), date.clone());
-        if self.encrypted {
-            // Shape only; M7 replaces this with a real keybag.
+        if let Some(password) = &self.password {
+            // A real keybag, with keys actually derived from the password.
+            let crypt = encryption::Encryption::new(password)?;
+            manifest.insert("BackupKeyBag".into(), Value::Data(crypt.keybag_blob()));
+            manifest.insert("ManifestKey".into(), Value::Data(crypt.manifest_key_blob()));
+        } else if self.encrypted {
+            // Flagged encrypted but with nothing behind it, for testing the
+            // detection path alone.
             manifest.insert("BackupKeyBag".into(), Value::Data(vec![0; 32]));
             manifest.insert("ManifestKey".into(), Value::Data(vec![0; 44]));
         }

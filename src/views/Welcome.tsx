@@ -2,10 +2,39 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { FolderOpen, Lock, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useForgetRecent, useOpenBackup, useRecentBackups } from "../api/backup";
+import {
+  useForgetRecent,
+  useOpenBackup,
+  usePeekBackup,
+  useRecentBackups,
+} from "../api/backup";
 import { errorCode } from "../api/client";
 import { formatBytes, formatDate, formatDateTime } from "../components/format";
+import { PasswordModal } from "../components/PasswordModal";
+import type { BackupPeek } from "../bindings/BackupPeek";
 import { useUi } from "../store/ui";
+
+/** An empty BackupInfo, for a prompt shown when even peeking failed. */
+function emptyInfo(): BackupPeek["info"] {
+  return {
+    deviceName: null,
+    productName: null,
+    productType: null,
+    productVersion: null,
+    buildVersion: null,
+    udid: null,
+    serialNumber: null,
+    phoneNumber: null,
+    lastBackupDate: null,
+    installedApps: [],
+    encrypted: true,
+    passcodeSet: null,
+    manifestVersion: null,
+    isFullBackup: null,
+    snapshotState: null,
+    backupDate: null,
+  };
+}
 
 /** Plain-words explanation for the errors opening can fail with. */
 function explain(error: unknown): { title: string; detail: string } {
@@ -23,12 +52,16 @@ function explain(error: unknown): { title: string; detail: string } {
         title: "That is not a folder",
         detail: "Choose the backup folder itself, not a file inside it.",
       };
-    case "password_required":
-    case "encryption_unsupported":
+    case "missing_keybag":
       return {
-        title: "This backup is encrypted",
+        title: "This backup is encrypted but incomplete",
         detail:
-          "Encrypted backups need the backup password, which ibex can use from milestone M7. Until then, only unencrypted backups open.",
+          "Manifest.plist says it is encrypted but carries no key bag, so there is nothing to unlock it with. The folder is probably a partial copy.",
+      };
+    case "unsupported_keybag":
+      return {
+        title: "This backup's key bag is not one ibex understands",
+        detail: `${message} If the backup came from a very new iOS, this is worth reporting.`,
       };
     case "missing_metadata":
       return {
@@ -42,19 +75,50 @@ function explain(error: unknown): { title: string; detail: string } {
 
 export function Welcome() {
   const openBackup = useOpenBackup();
+  const peekBackup = usePeekBackup();
   const recents = useRecentBackups();
   const forget = useForgetRecent();
   const openedBackup = useUi((s) => s.openedBackup);
   const [failure, setFailure] = useState<{ title: string; detail: string } | null>(null);
   const [dropping, setDropping] = useState(false);
+  /** Set while an encrypted backup is waiting for its password. */
+  const [locked, setLocked] = useState<BackupPeek | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
-  const openPath = (path: string) => {
+  const openPath = (path: string, password?: string) => {
     setFailure(null);
     openBackup.mutate(
-      { path },
+      { path, password },
       {
-        onSuccess: openedBackup,
-        onError: (error) => setFailure(explain(error)),
+        onSuccess: (summary) => {
+          setLocked(null);
+          setPasswordError(null);
+          openedBackup(summary);
+        },
+        onError: (error) => {
+          const code = errorCode(error);
+          // An encrypted backup is not a failure: ask for the password. We
+          // learn the device name first so the prompt can say what it is
+          // unlocking.
+          if (code === "password_required") {
+            peekBackup.mutate(path, {
+              onSuccess: (peek) => {
+                setLocked(peek);
+                setPasswordError(null);
+              },
+              // Even if peeking fails, still prompt — just without the name.
+              onError: () =>
+                setLocked({ path, encrypted: true, info: emptyInfo() }),
+            });
+            return;
+          }
+          if (code === "bad_password") {
+            setPasswordError("That password did not unlock the backup. Try again.");
+            return;
+          }
+          setLocked(null);
+          setFailure(explain(error));
+        },
       },
     );
   };
@@ -89,6 +153,18 @@ export function Welcome() {
 
   return (
     <div className={dropping ? "welcome welcome--dropping" : "welcome"}>
+      {locked ? (
+        <PasswordModal
+          peek={locked}
+          busy={openBackup.isPending}
+          error={passwordError}
+          onSubmit={(password) => openPath(locked.path, password)}
+          onCancel={() => {
+            setLocked(null);
+            setPasswordError(null);
+          }}
+        />
+      ) : null}
       <div style={{ textAlign: "center" }}>
         <h1 className="welcome__title">ibex</h1>
         <p className="welcome__sub">

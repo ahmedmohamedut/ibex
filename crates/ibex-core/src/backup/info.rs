@@ -120,6 +120,61 @@ impl BackupInfo {
     }
 }
 
+/// The key material from `Manifest.plist`, for an encrypted backup.
+///
+/// Kept apart from [`BackupInfo`] so it never crosses IPC: `BackupInfo` derives
+/// `Serialize` and `TS`, this does not.
+#[derive(Clone)]
+pub struct EncryptionBlobs {
+    /// The TLV keybag holding every wrapped class key.
+    pub keybag: Vec<u8>,
+    /// 4-byte protection class plus the wrapped key for `Manifest.db`.
+    pub manifest_key: Vec<u8>,
+}
+
+impl std::fmt::Debug for EncryptionBlobs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Lengths only: these are key material.
+        f.debug_struct("EncryptionBlobs")
+            .field(
+                "keybag",
+                &format_args!("{} bytes, redacted", self.keybag.len()),
+            )
+            .field(
+                "manifest_key",
+                &format_args!("{} bytes, redacted", self.manifest_key.len()),
+            )
+            .finish()
+    }
+}
+
+/// Read the keybag and manifest key out of `Manifest.plist`.
+///
+/// `Ok(None)` when the backup is not encrypted.
+pub fn read_encryption_blobs(root: &Path) -> Result<Option<EncryptionBlobs>> {
+    let Some(plist) = read_plist(root, "Manifest.plist")? else {
+        return Err(BackupError::MissingMetadataFile {
+            file: "Manifest.plist",
+        }
+        .into());
+    };
+    if !dict_bool(&plist, "IsEncrypted").unwrap_or(false) {
+        return Ok(None);
+    }
+    let keybag = dict_get(&plist, "BackupKeyBag")
+        .and_then(Value::as_data)
+        .map(<[u8]>::to_vec)
+        .ok_or(crate::error::CryptoError::MissingKeybag)?;
+    let manifest_key = dict_get(&plist, "ManifestKey")
+        .and_then(Value::as_data)
+        .map(<[u8]>::to_vec)
+        .ok_or(crate::error::CryptoError::MissingKeybag)?;
+    Ok(Some(EncryptionBlobs {
+        keybag,
+        manifest_key,
+    }))
+}
+
 /// Read one plist from the backup folder. `Ok(None)` when it isn't there.
 fn read_plist(root: &Path, name: &str) -> Result<Option<Value>> {
     let path = root.join(name);

@@ -22,6 +22,7 @@
 
 pub mod backup;
 pub mod cache;
+pub mod crypto;
 pub mod error;
 pub mod page;
 pub mod util;
@@ -34,5 +35,6 @@ pub use backup::{
     Backup, BackupInfo, DomainSummary, EntryKind, FileMeta, Manifest, ManifestEntry, ReadSeek,
 };
 pub use cache::CacheDir;
+pub use crypto::KeyBag;
 pub use error::{BackupError, CryptoError, Error, ExtractError, Result};
 pub use page::{Page, Paged};

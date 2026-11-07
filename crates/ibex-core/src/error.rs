@@ -58,10 +58,6 @@ pub enum BackupError {
     #[error("this backup is encrypted; a password is required")]
     PasswordRequired,
 
-    /// Removed in milestone M7, which implements the crypto.
-    #[error("encrypted backups are not supported yet (milestone M7)")]
-    EncryptionUnsupported,
-
     #[error("{file} is missing from the backup")]
     MissingMetadataFile { file: &'static str },
 
@@ -91,7 +87,6 @@ impl BackupError {
             BackupError::NotABackup { .. } => "not_a_backup",
             BackupError::NotADirectory { .. } => "not_a_directory",
             BackupError::PasswordRequired => "password_required",
-            BackupError::EncryptionUnsupported => "encryption_unsupported",
             BackupError::MissingMetadataFile { .. } => "missing_metadata",
             BackupError::Plist { .. } => "bad_plist",
             BackupError::MalformedMetadata { .. } => "malformed_metadata",
@@ -153,6 +148,9 @@ pub enum CryptoError {
 
     #[error("decryption failed: {detail}")]
     Decrypt { detail: String },
+
+    #[error("this backup is encrypted but Manifest.plist has no BackupKeyBag")]
+    MissingKeybag,
 }
 
 impl CryptoError {
@@ -162,6 +160,7 @@ impl CryptoError {
             CryptoError::UnsupportedKeybag { .. } => "unsupported_keybag",
             CryptoError::NoClassKey { .. } => "no_class_key",
             CryptoError::Decrypt { .. } => "decrypt_failed",
+            CryptoError::MissingKeybag => "missing_keybag",
         }
     }
 }

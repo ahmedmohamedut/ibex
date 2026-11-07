@@ -22,6 +22,7 @@
 │  export/     html · csv · json · files                                           │
 │  thumbs/     thumbnail generation + cache (HEIC, JPEG, PNG, video poster later)  │
 │  search/     FTS5 index over messages                                            │
+│  crypto/     keybag, key derivation, RFC 3394 unwrap, AES-256-CBC decryption      │
 │  util/       time (Apple + Unix epochs), mime sniffing, plist_text, nskeyedarchiver, paths │
 │  testutil/   synthetic backup builder (feature = "testutil")                    │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -74,8 +75,11 @@ Key operations:
 - `Backup::open_with_cache(path, password, CacheDir) -> Result<Backup>`: same, with the cache
   redirected. Tests use it so the suite never writes to the user's real data directory; the
   app can use it to put the cache elsewhere.
-- Until M7, an encrypted backup returns `BackupError::PasswordRequired` without a password and
-  `BackupError::EncryptionUnsupported` with one, rather than pretending to open.
+- `Backup::peek(path) -> Result<BackupInfo>`: metadata without opening. `Info.plist` and
+  `Manifest.plist` are in the clear even in an encrypted backup, so the password prompt can name
+  the device it is unlocking.
+- An encrypted backup without a password returns `BackupError::PasswordRequired`; with a wrong
+  one, `CryptoError::BadPassword`. Both are distinct UI states.
 - `backup.find(domain, rel_path) -> Option<ManifestEntry>`
 - `backup.list_dir(domain, dir, Page) -> Paged<ManifestEntry>`: direct children only, filtered
   and ordered in SQL so `LIMIT`/`OFFSET` page over the right set. Directories sort first.
@@ -111,6 +115,40 @@ and mtimes. The stamp is needed because opening a WAL database read-write legiti
 checkpoints it, changing the copy's own size, which would otherwise force a copy every time.
 
 API: `backup.open_db(domain, rel_path) -> Result<rusqlite::Connection>`
+
+### crypto
+
+Encrypted backups, implemented in M7. The chain, rooted in the backup password:
+
+```text
+password ──PBKDF2-SHA256(DPSL, DPIC)──┐
+                                      ├─PBKDF2-SHA1(SALT, ITER)──> passcode key
+                                      ┘                               │
+                                                     RFC 3394 unwrap   ▼
+  keybag WPKY per protection class ─────────────────────────────> class keys
+                                                                       │
+  ManifestKey / MBFile EncryptionKey ──────RFC 3394 unwrap─────────────▼
+                                                             per-file keys
+```
+
+- `KeyBag::unlock(keybag_bytes, password)` parses the TLV keybag, derives the passcode key and
+  unwraps every class key whose `WRAP & 2` is set. The AES key wrap's integrity check is what
+  makes a wrong password detectable: if **every** unwrap fails, that is `CryptoError::BadPassword`.
+  A single class failing is tolerated — that class is simply unavailable.
+- The password is borrowed, used once and dropped. Only the class keys are kept, in `Zeroizing`
+  buffers wiped on drop, and no `Debug` impl prints key bytes. Nothing is ever persisted.
+- `Manifest.db` is decrypted whole into `cache/<backup-id>/manifest.db` and opened from there.
+  Each file is decrypted on demand into `cache/<backup-id>/files/<file_id>`, streamed in 64 KiB
+  chunks and truncated to the manifest's recorded `Size` — so padding is removed without being
+  trusted, and a multi-gigabyte video is never buffered in memory. An existing decryption whose
+  length already matches is reused.
+- **Unlocking is deliberately expensive.** A current backup asks for ten million
+  PBKDF2-HMAC-SHA256 rounds: about 0.8s in a release build. Never call it on a UI thread.
+  `pbkdf2_hmac` is generic and so is monomorphized into ibex-core, which means ibex-core's own
+  opt-level governs its speed; the workspace `Cargo.toml` therefore sets `opt-level = 1` for
+  ibex-core in the dev profile, turning ~11s into ~1s.
+- `testutil` carries the matching **encrypt-and-wrap** side, so tests build genuinely encrypted
+  fixtures and prove the decrypt path against them rather than against a parallel implementation.
 
 ### extractors
 
@@ -243,6 +281,7 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `search` | `handle, query, filters, page` | `Page<SearchHit>` |
 | `cancel_job` | `jobId` | `()` |
 | `clear_cache` | `handle` | `u64` (bytes freed) |
+| `peek_backup` | `path` | `BackupPeek` (device info without opening; labels the password prompt) |
 | `backup_stats` | `handle` | `BackupStats` (total bytes on disk, entry count, domain count, cache bytes) |
 | `save_file_as` | `handle, fileId, dest` | `SaveReport` (bytes written, whether the mtime was restored) |
 | `forget_recent` | `path` | `()` |

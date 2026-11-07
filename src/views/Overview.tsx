@@ -138,6 +138,21 @@ export function Overview() {
             to read them without touching the backup. Clearing the cache is always safe;
             copies are remade on demand.
           </p>
+          {info.encrypted ? (
+            <p
+              style={{
+                margin: "10px 0",
+                fontSize: 12,
+                color: "var(--warning)",
+                borderLeft: "3px solid var(--warning)",
+                paddingLeft: 8,
+              }}
+            >
+              This backup is encrypted, so those cached copies are{" "}
+              <strong>decrypted</strong> and readable by anything that can read your
+              home directory. They stay there until you clear them.
+            </p>
+          ) : null}
           <button
             type="button"
             className="button"

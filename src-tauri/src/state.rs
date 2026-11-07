@@ -1,6 +1,7 @@
 //! Application state: the backups currently open.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use ibex_core::Backup;
@@ -14,11 +15,32 @@ pub type BackupHandle = String;
 #[derive(Default)]
 pub struct AppState {
     backups: RwLock<HashMap<BackupHandle, Arc<Backup>>>,
+    /// Overrides the XDG data directory for the cache and the recents list.
+    ///
+    /// `None` means the real one. The integration tests set it to a tempdir, so
+    /// the suite never writes decrypted data or fake recents into the user's
+    /// home — which is doubly important here, since a decrypted cache is the
+    /// most sensitive thing ibex produces.
+    data_root: Option<PathBuf>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// State whose cache and recents live under `root` instead of the XDG data
+    /// directory.
+    pub fn with_data_root(root: impl Into<PathBuf>) -> Self {
+        Self {
+            backups: RwLock::new(HashMap::new()),
+            data_root: Some(root.into()),
+        }
+    }
+
+    /// The data directory override, if any.
+    pub fn data_root(&self) -> Option<&Path> {
+        self.data_root.as_deref()
     }
 
     /// Register an open backup and return its handle.

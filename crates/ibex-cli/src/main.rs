@@ -45,16 +45,56 @@ enum Command {
 struct BackupArgs {
     /// Path to the backup folder: the one containing Manifest.db.
     backup: PathBuf,
-    /// Password for an encrypted backup (milestone M7).
+    /// Prompt for the backup password (encrypted backups).
+    ///
+    /// The password is read from the `IBEX_PASSWORD` environment variable if
+    /// set, otherwise from the terminal. It is deliberately not accepted as an
+    /// argument, which would put it in shell history and in `ps` output.
     #[arg(long)]
-    password: Option<String>,
+    password: bool,
 }
 
 impl BackupArgs {
     fn open(&self) -> Result<Backup> {
-        Backup::open(&self.backup, self.password.as_deref())
-            .with_context(|| format!("opening {}", self.backup.display()))
+        let password = if self.password {
+            Some(read_password()?)
+        } else {
+            None
+        };
+        match Backup::open(&self.backup, password.as_deref()) {
+            Ok(backup) => Ok(backup),
+            Err(e) if e.code() == "password_required" => {
+                // Retry with a prompt rather than making the user guess the
+                // flag they needed.
+                let password = read_password()?;
+                Backup::open(&self.backup, Some(&password))
+                    .with_context(|| format!("opening {}", self.backup.display()))
+            }
+            Err(e) => Err(anyhow::Error::new(e))
+                .with_context(|| format!("opening {}", self.backup.display())),
+        }
     }
+}
+
+/// Read the backup password from the environment or the terminal.
+///
+/// Never echoed, never logged, never taken from argv.
+fn read_password() -> Result<String> {
+    if let Ok(password) = std::env::var("IBEX_PASSWORD")
+        && !password.is_empty()
+    {
+        return Ok(password);
+    }
+    eprint!("Backup password: ");
+    std::io::stderr().flush()?;
+    let mut password = String::new();
+    std::io::stdin()
+        .read_line(&mut password)
+        .context("reading the password")?;
+    eprintln!();
+    // Terminals leave the newline on; nothing else is trimmed, since a
+    // password may legitimately contain spaces.
+    Ok(password.trim_end_matches(['\n', '\r']).to_string())
 }
 
 #[derive(Args)]

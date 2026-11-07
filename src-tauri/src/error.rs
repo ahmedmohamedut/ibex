@@ -86,10 +86,10 @@ mod tests {
         ));
         assert_eq!(required.code, "password_required");
 
-        let unsupported = IpcError::from(ibex_core::Error::Backup(
-            ibex_core::BackupError::EncryptionUnsupported,
+        let bad = IpcError::from(ibex_core::Error::Crypto(
+            ibex_core::CryptoError::BadPassword,
         ));
-        assert_eq!(unsupported.code, "encryption_unsupported");
+        assert_eq!(bad.code, "bad_password");
     }
 
     #[test]

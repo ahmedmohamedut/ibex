@@ -26,6 +26,16 @@ pub struct BackupSummary {
     pub sources: Vec<SourceAvailability>,
 }
 
+/// What `peek_backup` reports: enough to label the password prompt.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BackupPeek {
+    pub path: String,
+    pub encrypted: bool,
+    pub info: BackupInfo,
+}
+
 /// Whether one data source is present in this backup.
 ///
 /// M1 only detects whether the underlying database exists; the extractors that

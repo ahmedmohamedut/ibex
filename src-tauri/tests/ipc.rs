@@ -14,24 +14,15 @@ use tauri::webview::InvokeRequest;
 use tauri::{Manager, WebviewWindow, ipc};
 
 /// Build a mock app with the real command handler and state.
-fn app() -> tauri::App<tauri::test::MockRuntime> {
+///
+/// The handler comes from `ibex_invoke_handler!`, the same macro the real app
+/// uses, so a command can never be registered in one and missing from the other.
+fn app(data_root: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
     mock_builder()
-        .manage(AppState::new())
-        .invoke_handler(tauri::generate_handler![
-            ibex_lib::commands::open_backup,
-            ibex_lib::commands::close_backup,
-            ibex_lib::commands::recent_backups,
-            ibex_lib::commands::forget_recent,
-            ibex_lib::commands::list_domains,
-            ibex_lib::commands::list_dir,
-            ibex_lib::commands::file_info,
-            ibex_lib::commands::read_text_preview,
-            ibex_lib::commands::read_hex_preview,
-            ibex_lib::commands::backup_stats,
-            ibex_lib::commands::save_file_as,
-            ibex_lib::commands::clear_cache,
-            ibex_lib::commands::total_cache_size,
-        ])
+        // An isolated data root: no test may write a decrypted cache or a fake
+        // recents entry into the real one.
+        .manage(AppState::with_data_root(data_root))
+        .invoke_handler(ibex_lib::ibex_invoke_handler!())
         .build(mock_context(noop_assets()))
         .expect("failed to build the mock app")
 }
@@ -83,7 +74,7 @@ fn harness() -> Harness {
         .build(tmp.path())
         .unwrap();
 
-    let app = app();
+    let app = app(tmp.path());
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
@@ -110,7 +101,7 @@ fn harness() -> Harness {
 #[test]
 fn opening_a_folder_that_is_not_a_backup_returns_a_typed_error() {
     let tmp = tempfile::tempdir().unwrap();
-    let app = app();
+    let app = app(tmp.path());
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
@@ -132,26 +123,54 @@ fn opening_a_folder_that_is_not_a_backup_returns_a_typed_error() {
 }
 
 #[test]
-fn an_encrypted_backup_asks_for_a_password_over_ipc() {
+fn an_encrypted_backup_asks_for_a_password_then_opens_with_it() {
     let tmp = tempfile::tempdir().unwrap();
     let root = FixtureBackup::new()
-        .marked_encrypted()
-        .with_file("HomeDomain", "a.txt", b"x")
+        .encrypted_with_password("hunter2")
+        .with_device_name("Locked iPhone")
+        .with_file("HomeDomain", "a.txt", b"secret contents")
         .build(tmp.path())
         .unwrap();
+    let path = root.to_str().unwrap();
 
-    let app = app();
+    let app = app(tmp.path());
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
 
+    // No password: the frontend switches on this code to show the modal.
     let err = invoke(
         &webview,
         "open_backup",
-        json!({ "path": root.to_str().unwrap(), "password": null }),
+        json!({ "path": path, "password": null }),
     )
-    .expect_err("an encrypted backup cannot open yet");
+    .expect_err("an encrypted backup needs a password");
     assert_eq!(err["code"], "password_required");
+
+    // Peeking names the device for the modal's title, without any password.
+    let peek = invoke(&webview, "peek_backup", json!({ "path": path })).unwrap();
+    assert_eq!(peek["encrypted"], true);
+    assert_eq!(peek["info"]["deviceName"], "Locked iPhone");
+
+    // A wrong password gets its own code, so the modal can keep the field and
+    // show an inline error rather than bailing out.
+    let err = invoke(
+        &webview,
+        "open_backup",
+        json!({ "path": path, "password": "wrong" }),
+    )
+    .expect_err("a wrong password must be rejected");
+    assert_eq!(err["code"], "bad_password");
+
+    // And the right one opens it.
+    let summary = invoke(
+        &webview,
+        "open_backup",
+        json!({ "path": path, "password": "hunter2" }),
+    )
+    .unwrap();
+    assert_eq!(summary["encrypted"], true);
+    assert!(!summary["handle"].as_str().unwrap().is_empty());
 }
 
 #[test]
@@ -490,4 +509,81 @@ fn a_full_session_never_writes_to_the_backup_folder() {
         snapshot(&h.root),
         "hard rule 1: the backup folder must not be modified"
     );
+}
+
+#[test]
+fn an_encrypted_backup_serves_decrypted_bytes_through_the_commands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = FixtureBackup::new()
+        .encrypted_with_password("pw")
+        .with_sample_media()
+        .build(tmp.path())
+        .unwrap();
+
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let backup = ibex_core::Backup::open_with_cache(
+        &root,
+        Some("pw"),
+        ibex_core::CacheDir::at(tmp.path().join("cache")),
+    )
+    .unwrap();
+    let handle = app.state::<AppState>().insert(backup);
+
+    let listing = invoke(
+        &webview,
+        "list_dir",
+        json!({ "handle": handle, "domain": "HomeDomain", "path": "Library/IbexSamples" }),
+    )
+    .unwrap();
+    let id = |name: &str| -> String {
+        listing["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["relativePath"].as_str().unwrap().ends_with(name))
+            .unwrap_or_else(|| panic!("{name} missing"))["fileId"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // A preview of an encrypted file must show the plaintext, not ciphertext.
+    let text = invoke(
+        &webview,
+        "read_text_preview",
+        json!({ "handle": handle, "fileId": id("notes.txt") }),
+    )
+    .unwrap();
+    assert_eq!(text["kind"], "text");
+    assert!(
+        text["text"]
+            .as_str()
+            .unwrap()
+            .contains("ibex synthetic fixture"),
+        "expected decrypted text, got {}",
+        text["text"]
+    );
+
+    // And file_info sniffs the decrypted content, so previews pick the right
+    // view rather than falling back to hex for everything.
+    let info = invoke(
+        &webview,
+        "file_info",
+        json!({ "handle": handle, "fileId": id("tone.wav") }),
+    )
+    .unwrap();
+    assert_eq!(info["sniffed"]["preview"], "audio");
+    assert_eq!(info["dataBytes"], 44 + 8_000 * 5, "the plaintext length");
+
+    // The hex view shows plaintext bytes too.
+    let hex = invoke(
+        &webview,
+        "read_hex_preview",
+        json!({ "handle": handle, "fileId": id("tone.wav"), "offset": 0, "len": 4 }),
+    )
+    .unwrap();
+    assert_eq!(hex["hex"], "52494646", "\"RIFF\", decrypted");
 }

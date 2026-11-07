@@ -36,17 +36,22 @@ struct StoredRecent {
     last_opened: String,
 }
 
-/// Where the list lives.
-pub fn store_path() -> Result<PathBuf, IpcError> {
-    Ok(ibex_core::cache::data_dir()?.join("backups.json"))
+/// Where the list lives. `base` overrides the XDG data directory, which tests
+/// use so they never write to the user's own list.
+pub fn store_path(base: Option<&Path>) -> Result<PathBuf, IpcError> {
+    let dir = match base {
+        Some(base) => base.to_path_buf(),
+        None => ibex_core::cache::data_dir()?,
+    };
+    Ok(dir.join("backups.json"))
 }
 
 /// Read the list, newest first.
 ///
 /// A missing or unreadable file yields an empty list: a corrupt recents file
 /// must never stop the app from starting.
-pub fn load() -> Vec<RecentBackup> {
-    let Ok(path) = store_path() else {
+pub fn load(base: Option<&Path>) -> Vec<RecentBackup> {
+    let Ok(path) = store_path(base) else {
         return Vec::new();
     };
     let Ok(bytes) = std::fs::read(&path) else {
@@ -74,8 +79,13 @@ pub fn load() -> Vec<RecentBackup> {
 ///
 /// Failing to write is not fatal — the backup is open either way — so the
 /// caller logs nothing and carries on.
-pub fn record(path: &Path, info: &BackupInfo, total_bytes: Option<u64>) -> Result<(), IpcError> {
-    let store = store_path()?;
+pub fn record(
+    path: &Path,
+    info: &BackupInfo,
+    total_bytes: Option<u64>,
+    base: Option<&Path>,
+) -> Result<(), IpcError> {
+    let store = store_path(base)?;
     let path_string = path.display().to_string();
 
     let mut stored: Vec<StoredRecent> = std::fs::read(&store)
@@ -115,8 +125,8 @@ pub fn record(path: &Path, info: &BackupInfo, total_bytes: Option<u64>) -> Resul
 }
 
 /// Drop one entry, for the Welcome screen's "remove from list".
-pub fn forget(path: &str) -> Result<(), IpcError> {
-    let store = store_path()?;
+pub fn forget(path: &str, base: Option<&Path>) -> Result<(), IpcError> {
+    let store = store_path(base)?;
     let mut stored: Vec<StoredRecent> = std::fs::read(&store)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())

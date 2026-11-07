@@ -17,7 +17,7 @@ Goal: open an unencrypted backup and browse its raw file tree from the CLI.
 - [x] Cache dir management (`~/.local/share/ibex/cache/<backup-id>/`)
 - [x] `testutil` synthetic backup builder
 - [x] CLI: `info`, `domains`, `ls <domain> [path]`, `cat <domain> <path> > out`, `sql <domain> <path> "<query>"` (schema/count only by default)
-- [~] Integration test gated by `IBEX_TEST_BACKUP` — written (`crates/ibex-core/tests/real_backup.rs`) and run against a real backup on 2026-11-07, but it **skipped**: that backup is encrypted, so it needs M7 before it can assert anything. The skip path itself is confirmed working. **Still needs an unencrypted backup, or M7, to count as verified.**
+- [~] Integration test gated by `IBEX_TEST_BACKUP` — written (`crates/ibex-core/tests/real_backup.rs`) and run against a real backup on 2026-11-07, but it **skipped**: that backup is encrypted. M7 has since landed, so it now only needs `IBEX_TEST_PASSWORD` set alongside `IBEX_TEST_BACKUP` to assert for the first time. **Counts as verified once that run happens.**
 
 **Done when:** `ibex-cli info $IBEX_TEST_BACKUP` and `ibex-cli ls HomeDomain Library/SMS` work on a real backup.
 
@@ -28,9 +28,10 @@ Notes:
   paths rather than a `Backup`; `Backup::open_with_cache` exists so tests and the app can
   redirect the cache.
 - Unverified assumption: `MBFile`'s `LastModified`/`Birth` are read as **Unix** seconds,
-  not Apple-epoch seconds. Wrong would mean mtimes off by 31 years. **Still unverified** as of
-  2026-11-07: the only real backup available is encrypted, so its `Manifest.db` cannot be read
-  until M7. Confirm as soon as a manifest can be decrypted.
+  not Apple-epoch seconds. Wrong would mean mtimes off by 31 years. **Still unverified** —
+  M7 can now decrypt the manifest, so the check is one password away:
+  `file_dates_are_plausible_which_settles_the_mbfile_epoch_question` in `real_backup.rs` fails
+  if dates fall outside 2007–2030, or just look at the Raw browser's Modified column.
 
 ## M1: App shell and Raw browser
 Goal: open a backup in the GUI and browse every file.
@@ -112,17 +113,36 @@ Notes:
 **Done when:** recordings play with their titles, and documents are browsable by app and exportable.
 
 ## M7: Encrypted backups
-> **Promoted in priority.** The only real backup available for development is encrypted
-> (iOS 27.2, keybag details in `docs/DATA_SOURCES.md`), so until this milestone lands, M0 and M1
-> cannot be verified against real data and M2–M6 would be built entirely against synthetic
-> fixtures. Consider doing this before M2.
-- [ ] Keybag TLV parsing, passcode key derivation, class key unwrap (RFC 3394)
-- [ ] Manifest.db decryption to cache; per-file decryption on demand
-- [ ] `zeroize` keys on close; never persist the password
-- [ ] Password modal + bad-password state; cache-sensitivity notice; clear cache
-- [ ] Tests: synthetic encrypted fixture (builder encrypts with known password)
+> **Done out of order, ahead of M2.** The only real backup available for development is
+> encrypted (iOS 27.2), so until this landed nothing could be verified against real data.
+
+- [x] Keybag TLV parsing, passcode key derivation, class key unwrap (RFC 3394)
+- [x] `Manifest.db` decryption to cache; per-file decryption on demand
+- [x] `zeroize` keys on close; never persist the password
+- [x] Password modal + bad-password state; cache-sensitivity notice; clear cache
+- [x] Tests: synthetic encrypted fixture (builder encrypts with known password)
 
 **Done when:** an encrypted backup opens with its password and every previous feature works on it.
+
+Notes:
+- The keybag parser was written against the real backup's verified structure, and the
+  known-answer tests (RFC 3394 §4.6, RFC 6070) pin the primitives so a refactor cannot
+  silently change them.
+- `testutil` gained the encrypt-and-wrap half of the scheme, so encrypted fixtures are produced
+  by the same code that reads them. The round trip is checked at awkward lengths (0, 1, 15, 16,
+  17 bytes) and across a 40 KB WAV.
+- Timing on the real backup's ten million rounds: **0.79s release, 1.04s dev**. Getting there
+  needed two profile fixes — all dependencies at `opt-level = 3`, and ibex-core itself at
+  `opt-level = 1`, because `pbkdf2_hmac` is generic and monomorphizes into ibex-core rather than
+  staying in pbkdf2. Without the second, unlocking took 11s in `tauri dev`.
+- Verified against the real backup as far as is possible without its password: the real keybag
+  parses, derivation runs at full cost, and a deliberately wrong password is correctly reported
+  as `bad_password` rather than crashing or hanging.
+- `ibex-cli` takes `--password` and reads it from `IBEX_PASSWORD` or a prompt, never from argv
+  where it would reach shell history and `ps`.
+- **Still open:** the MBFile epoch question, and M0's `[~]` integration test. Both now need only
+  one run with the real password — `IBEX_TEST_PASSWORD` makes `real_backup.rs` assert, including
+  a new test that fails if file dates land outside 2007–2030.
 
 ## M8: Search and polish
 - [ ] FTS5 index job over SMS + WhatsApp; search palette (Ctrl+K) with jump-to-message

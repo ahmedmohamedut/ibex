@@ -4,7 +4,7 @@
 //! onto `spawn_blocking`, so the UI thread never stalls. Each one is a thin
 //! wrapper: the logic lives in ibex-core.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ibex_core::util::{mime, plist_text};
@@ -12,8 +12,8 @@ use ibex_core::{Backup, CacheDir, DomainSummary, ManifestEntry, Page, Paged};
 use tauri::State;
 
 use crate::dto::{
-    BackupStats, BackupSummary, FileInfo, HexPreview, RecentBackup, SaveReport, SourceAvailability,
-    TextPreview,
+    BackupPeek, BackupStats, BackupSummary, FileInfo, HexPreview, RecentBackup, SaveReport,
+    SourceAvailability, TextPreview,
 };
 use crate::error::IpcError;
 use crate::recents;
@@ -96,6 +96,24 @@ fn detect_sources(backup: &Backup) -> Vec<SourceAvailability> {
         .collect()
 }
 
+/// Read a backup's metadata without opening it.
+///
+/// The password modal uses this to name the device being unlocked: `Info.plist`
+/// is readable even when everything else in the backup is encrypted.
+#[tauri::command]
+pub async fn peek_backup(path: String) -> Result<BackupPeek, IpcError> {
+    blocking(move || {
+        let root = PathBuf::from(&path);
+        let info = Backup::peek(&root)?;
+        Ok(BackupPeek {
+            path: root.display().to_string(),
+            encrypted: info.encrypted,
+            info,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn open_backup(
     state: State<'_, AppState>,
@@ -103,15 +121,31 @@ pub async fn open_backup(
     password: Option<String>,
 ) -> Result<BackupSummary, IpcError> {
     let root = PathBuf::from(&path);
+    let data_root = state.data_root().map(Path::to_path_buf);
 
-    // Opening reads the plists and copies Manifest.db into the cache, so it is
-    // blocking work.
+    // Opening reads the plists and copies Manifest.db into the cache, and for
+    // an encrypted backup also derives the keys — about a second of deliberate
+    // work. All of it belongs off the UI thread.
     let opened = blocking(move || {
-        let backup = Backup::open(&root, password.as_deref())?;
+        let backup = match &data_root {
+            // A data-root override has to be turned into this backup's own
+            // cache directory, which needs its id.
+            Some(dir) => {
+                let id = Backup::cache_id(&root)?;
+                let cache = CacheDir::at(dir.join("cache").join(id));
+                Backup::open_with_cache(&root, password.as_deref(), cache)?
+            }
+            None => Backup::open(&root, password.as_deref())?,
+        };
         let total_bytes = backup.total_bytes().ok();
         let sources = detect_sources(&backup);
         // Best effort: a failure to record a recent must not fail the open.
-        let _ = recents::record(backup.root(), backup.info(), total_bytes);
+        let _ = recents::record(
+            backup.root(),
+            backup.info(),
+            total_bytes,
+            data_root.as_deref(),
+        );
         Ok((backup, sources))
     })
     .await?;
@@ -135,13 +169,15 @@ pub async fn close_backup(state: State<'_, AppState>, handle: String) -> Result<
 }
 
 #[tauri::command]
-pub async fn recent_backups() -> Result<Vec<RecentBackup>, IpcError> {
-    blocking(|| Ok(recents::load())).await
+pub async fn recent_backups(state: State<'_, AppState>) -> Result<Vec<RecentBackup>, IpcError> {
+    let data_root = state.data_root().map(Path::to_path_buf);
+    blocking(move || Ok(recents::load(data_root.as_deref()))).await
 }
 
 #[tauri::command]
-pub async fn forget_recent(path: String) -> Result<(), IpcError> {
-    blocking(move || recents::forget(&path)).await
+pub async fn forget_recent(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
+    let data_root = state.data_root().map(Path::to_path_buf);
+    blocking(move || recents::forget(&path, data_root.as_deref())).await
 }
 
 #[tauri::command]
@@ -354,9 +390,13 @@ pub async fn clear_cache(state: State<'_, AppState>, handle: String) -> Result<u
 
 /// Size of the whole ibex cache directory, for the Overview's notice.
 #[tauri::command]
-pub async fn total_cache_size() -> Result<u64, IpcError> {
-    blocking(|| {
-        let dir = ibex_core::cache::data_dir()?;
+pub async fn total_cache_size(state: State<'_, AppState>) -> Result<u64, IpcError> {
+    let data_root = state.data_root().map(Path::to_path_buf);
+    blocking(move || {
+        let dir = match data_root {
+            Some(dir) => dir,
+            None => ibex_core::cache::data_dir()?,
+        };
         Ok(CacheDir::at(dir.join("cache")).size_on_disk()?)
     })
     .await
