@@ -3,6 +3,8 @@ name = "ibex-core"
 description = "Backup parsing, extractors and exporters for ibex. No UI dependencies."
 version.workspace = true
 edition.workspace = true
+# GPL because of imessage-database; see docs/DATA_SOURCES.md.
+license = "GPL-3.0-or-later"
 
 [features]
 # Synthetic backup builder used by tests and by `ibex-cli fixture`.
@@ -15,6 +17,10 @@ cbc = "0.2.1"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 filetime = "0.2.29"
 hex = "0.4.3"
+# GPL-3.0-or-later. Chosen in M2 for its attributedBody (typedstream) decoding
+# and iOS-version schema probing; this is what makes ibex GPL. See
+# docs/DATA_SOURCES.md for the decision and its reasoning.
+imessage-database = "5.0.1"
 infer = { version = "0.22.0", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }

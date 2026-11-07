@@ -51,21 +51,27 @@ export function Sidebar() {
       <div className="sidebar__group">Sources</div>
       {SOURCE_ITEMS.map(({ section: target, sourceId, label, Icon }) => {
         const source = sourceById.get(sourceId);
-        // Every source view lands in M2 onwards, so these stay disabled. The
-        // tooltip says whether the data is even in this backup.
+        // A section is usable only once its viewer has shipped *and* the data
+        // is in this backup. The tooltip explains which half is missing.
+        const usable = Boolean(source?.available && source?.implemented);
         const tooltip = source?.reason ?? "Not available in this backup";
         return (
           <button
             key={sourceId}
             type="button"
             className="sidebar__item"
-            disabled
+            disabled={!usable}
             title={tooltip}
             aria-current={section === target}
+            onClick={() => {
+              if (usable) setSection(target);
+            }}
           >
             <Icon size={15} aria-hidden="true" />
             <span>{label}</span>
-            {source?.available ? <span className="sidebar__count">found</span> : null}
+            {source?.available && !source.implemented ? (
+              <span className="sidebar__count">found</span>
+            ) : null}
           </button>
         );
       })}

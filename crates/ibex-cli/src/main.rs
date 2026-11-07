@@ -35,6 +35,9 @@ enum Command {
     Cat(CatArgs),
     /// Run a read-only query against a database in the backup.
     Sql(SqlArgs),
+    /// SMS and iMessage conversations.
+    #[command(subcommand)]
+    Sms(SmsCommand),
     /// Write a synthetic backup, for exercising the CLI without a real one.
     #[cfg(feature = "fixture")]
     Fixture(FixtureArgs),
@@ -95,6 +98,38 @@ fn read_password() -> Result<String> {
     // Terminals leave the newline on; nothing else is trimmed, since a
     // password may legitimately contain spaces.
     Ok(password.trim_end_matches(['\n', '\r']).to_string())
+}
+
+#[derive(Subcommand)]
+enum SmsCommand {
+    /// List conversations.
+    Convs(SmsConvsArgs),
+    /// List messages in one conversation.
+    Msgs(SmsMsgsArgs),
+}
+
+#[derive(Args)]
+struct SmsConvsArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    #[arg(long, default_value_t = 50)]
+    limit: u32,
+    /// Show names and message previews. Off by default: these are personal.
+    #[arg(long)]
+    show_content: bool,
+}
+
+#[derive(Args)]
+struct SmsMsgsArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    /// Conversation id, as printed by `sms convs`.
+    conversation: String,
+    #[arg(long, default_value_t = 20)]
+    limit: u32,
+    /// Show message text and sender names. Off by default.
+    #[arg(long)]
+    show_content: bool,
 }
 
 #[derive(Args)]
@@ -183,6 +218,8 @@ fn main() -> Result<()> {
         Command::Ls(args) => ls(args),
         Command::Cat(args) => cat(args),
         Command::Sql(args) => sql(args),
+        Command::Sms(SmsCommand::Convs(args)) => sms_convs(args),
+        Command::Sms(SmsCommand::Msgs(args)) => sms_msgs(args),
         #[cfg(feature = "fixture")]
         Command::Fixture(args) => fixture(args),
     }
@@ -459,6 +496,111 @@ fn sql(args: &SqlArgs) -> Result<()> {
 /// Belt and braces: the connection is opened against a working copy, this
 /// keyword check runs first, and `Statement::readonly` is checked after
 /// preparing.
+/// List conversations. Counts and ids by default, content only on request.
+fn sms_convs(args: &SmsConvsArgs) -> Result<()> {
+    use ibex_core::extractors::sms::SmsDb;
+
+    let backup = args.backup.open()?;
+    let db = SmsDb::open(&backup).context("opening sms.db")?;
+    let page = db.list_conversations(Page::first(args.limit))?;
+
+    println!(
+        "{:<8} {:<7} {:>8}  {:<20}  {}",
+        "ID",
+        "KIND",
+        "MSGS",
+        "LAST ACTIVITY",
+        if args.show_content { "NAME" } else { "" }
+    );
+    for conv in &page.items {
+        let kind = if conv.is_group { "group" } else { "1:1" };
+        let last = conv
+            .last_message_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        if args.show_content {
+            println!(
+                "{:<8} {:<7} {:>8}  {:<20}  {}",
+                conv.id,
+                kind,
+                conv.message_count,
+                last,
+                conv.label()
+            );
+        } else {
+            println!(
+                "{:<8} {:<7} {:>8}  {:<20}  <{} participant(s)>",
+                conv.id,
+                kind,
+                conv.message_count,
+                last,
+                conv.participants.len()
+            );
+        }
+    }
+    println!(
+        "\n{} of {} conversations",
+        page.items.len(),
+        page.total.unwrap_or(0)
+    );
+    if !args.show_content {
+        println!("(names and previews withheld; pass --show-content to print them)");
+    }
+    Ok(())
+}
+
+/// List messages in one conversation.
+fn sms_msgs(args: &SmsMsgsArgs) -> Result<()> {
+    use ibex_core::MessageCursor;
+    use ibex_core::extractors::sms::SmsDb;
+
+    let backup = args.backup.open()?;
+    let db = SmsDb::open(&backup).context("opening sms.db")?;
+    let page = db.list_messages(&args.conversation, MessageCursor::first(args.limit))?;
+
+    println!(
+        "{:<20}  {:<4} {:<9} {:<4} {:<4}  {}",
+        "SENT",
+        "DIR",
+        "KIND",
+        "ATT",
+        "RX",
+        if args.show_content { "TEXT" } else { "ID" }
+    );
+    for message in &page.messages {
+        let sent = message
+            .sent_at
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let kind = format!("{:?}", message.kind);
+        let tail = if args.show_content {
+            message
+                .body
+                .clone()
+                .unwrap_or_else(|| "<no text>".to_string())
+        } else {
+            message.id.clone()
+        };
+        println!(
+            "{:<20}  {:<4} {:<9} {:<4} {:<4}  {}",
+            sent,
+            if message.from_me { "out" } else { "in" },
+            &kind[..kind.len().min(9)],
+            message.attachments.len(),
+            message.reactions.len(),
+            tail
+        );
+    }
+    println!("\n{} message(s)", page.messages.len());
+    if page.older.is_some() {
+        println!("(older messages remain; raise --limit to see more)");
+    }
+    if !args.show_content {
+        println!("(message text withheld; pass --show-content to print it)");
+    }
+    Ok(())
+}
+
 fn guard_read_only(query: &str) -> Result<()> {
     if query.is_empty() {
         bail!("empty query");
@@ -544,21 +686,29 @@ fn fixture(args: &FixtureArgs) -> Result<()> {
         .with_device_name("Fixture iPhone")
         .with_installed_app("net.whatsapp.WhatsApp")
         .with_sample_media()
-        .with_file("HomeDomain", "Library/Preferences/com.apple.nope.plist", b"x")
-        .with_file("HomeDomain", "Library/SMS/Drafts/draft.plist", b"draft")
-        .with_file("MediaDomain", "Library/SMS/Attachments/ab/01/IMG_0001.HEIC", b"heic")
-        .with_file("CameraRollDomain", "Media/DCIM/100APPLE/IMG_0001.JPG", b"jpeg")
-        .with_phantom_file("MediaDomain", "Library/SMS/Attachments/cd/02/gone.jpg", 98_765)
-        .with_wal_db(
+        .with_file(
             "HomeDomain",
-            "Library/SMS/sms.db",
-            "CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, is_from_me INTEGER);
-             CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
-             CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, mime_type TEXT);
-             INSERT INTO chat (chat_identifier, display_name) VALUES ('fixture-1', 'Fixture chat');
-             INSERT INTO message (text, date, is_from_me) VALUES ('synthetic', 0, 0);",
-            "INSERT INTO message (text, date, is_from_me) VALUES ('in the wal', 0, 1);",
+            "Library/Preferences/com.apple.nope.plist",
+            b"x",
         )
+        .with_file("HomeDomain", "Library/SMS/Drafts/draft.plist", b"draft")
+        .with_file(
+            "MediaDomain",
+            "Library/SMS/Attachments/ab/01/IMG_0001.HEIC",
+            b"heic",
+        )
+        .with_file(
+            "CameraRollDomain",
+            "Media/DCIM/100APPLE/IMG_0001.JPG",
+            b"jpeg",
+        )
+        .with_phantom_file(
+            "MediaDomain",
+            "Library/SMS/Attachments/cd/02/gone.jpg",
+            98_765,
+        )
+        .with_sms()
+        .with_address_book()
         .build(&args.out)
         .context("building the fixture")?;
 
@@ -568,7 +718,9 @@ fn fixture(args: &FixtureArgs) -> Result<()> {
          ibex-cli info {root}\n  \
          ibex-cli domains {root}\n  \
          ibex-cli ls {root} HomeDomain Library/SMS\n  \
-         ibex-cli sql {root} HomeDomain Library/SMS/sms.db",
+         ibex-cli sql {root} HomeDomain Library/SMS/sms.db\n  \
+         ibex-cli sms convs {root}\n  \
+         ibex-cli sms msgs {root} 1",
         root = root.display()
     );
     Ok(())

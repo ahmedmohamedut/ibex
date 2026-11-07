@@ -587,3 +587,134 @@ fn an_encrypted_backup_serves_decrypted_bytes_through_the_commands() {
     .unwrap();
     assert_eq!(hex["hex"], "52494646", "\"RIFF\", decrypted");
 }
+
+#[test]
+fn sms_conversations_and_messages_come_back_over_ipc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = FixtureBackup::new()
+        .with_sms()
+        .with_address_book()
+        .build(tmp.path())
+        .unwrap();
+
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let backup = ibex_core::Backup::open_with_cache(
+        &root,
+        None,
+        ibex_core::CacheDir::at(tmp.path().join("cache")),
+    )
+    .unwrap();
+    let handle = app.state::<AppState>().insert(backup);
+
+    // Conversations, in the camelCase shape the generated bindings declare.
+    let convs = invoke(&webview, "sms_conversations", json!({ "handle": handle })).unwrap();
+    let items = convs["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items[0].get("isGroup").is_some(), "got {:?}", items[0]);
+    assert!(items[0].get("messageCount").is_some());
+    assert!(items[0].get("lastMessageAt").is_some());
+
+    // One thread, newest first, with the fiddly bits intact.
+    let page = invoke(
+        &webview,
+        "sms_messages",
+        json!({ "handle": handle, "conversationId": "1" }),
+    )
+    .unwrap();
+    let messages = page["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 7, "the tapback must not be listed");
+
+    let find = |id: &str| {
+        messages
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+    };
+
+    // Text decoded out of attributedBody survives the IPC boundary.
+    assert_eq!(
+        find("FIXTURE-ATTRIBUTED-0001")["body"],
+        "Text that lives only in attributedBody"
+    );
+    // A reaction, with its camelCase kind.
+    let reacted = find("FIXTURE-MSG-0002");
+    assert_eq!(reacted["reactions"].as_array().unwrap().len(), 1);
+    assert_eq!(reacted["reactions"][0]["kind"], "loved");
+    // A reply link.
+    assert_eq!(find("FIXTURE-MSG-0004")["replyTo"], "FIXTURE-MSG-0001");
+    // An attachment that is present and one that is not.
+    let with_attachments = find("FIXTURE-MSG-0007");
+    let attachments = with_attachments["attachments"].as_array().unwrap();
+    assert_eq!(attachments.len(), 2);
+    assert!(attachments[0]["fileId"].is_string());
+    assert!(
+        attachments[1]["fileId"].is_null(),
+        "the missing attachment must report no file id"
+    );
+
+    // Paging: two at a time, and the cursor round-trips through JSON.
+    let first = invoke(
+        &webview,
+        "sms_messages",
+        json!({ "handle": handle, "conversationId": "1",
+                "cursor": { "beforeDate": null, "beforeRowid": null, "limit": 2 } }),
+    )
+    .unwrap();
+    assert_eq!(first["messages"].as_array().unwrap().len(), 2);
+    let older = &first["older"];
+    assert!(older.is_object(), "expected a cursor for the next page");
+
+    let second = invoke(
+        &webview,
+        "sms_messages",
+        json!({ "handle": handle, "conversationId": "1", "cursor": older }),
+    )
+    .unwrap();
+    let second_ids: Vec<&str> = second["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    let first_ids: Vec<&str> = first["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        second_ids.iter().all(|id| !first_ids.contains(id)),
+        "pages must not overlap"
+    );
+}
+
+#[test]
+fn the_sidebar_learns_that_messages_is_now_implemented() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = FixtureBackup::new().with_sms().build(tmp.path()).unwrap();
+    let path = root.to_str().unwrap();
+
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+
+    let summary = invoke(
+        &webview,
+        "open_backup",
+        json!({ "path": path, "password": null }),
+    )
+    .unwrap();
+    let sources = summary["sources"].as_array().unwrap();
+    let sms = sources.iter().find(|s| s["id"] == "sms").unwrap();
+    assert_eq!(sms["available"], true);
+    assert_eq!(sms["implemented"], true, "M2 ships the Messages view");
+
+    // Everything else is still pending, so the sidebar stays greyed there.
+    for other in sources.iter().filter(|s| s["id"] != "sms") {
+        assert_eq!(other["implemented"], false, "{:?}", other["id"]);
+    }
+}

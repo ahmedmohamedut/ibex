@@ -18,7 +18,7 @@
 ┌───────────────────────────────┴──────────── crates/ibex-core/ ──────────────────┐
 │  backup/     open, Info/Status/Manifest.plist, Manifest.db, resolver, crypto     │
 │  workcopy/   SQLite working copies (db + wal + shm) in the cache                 │
-│  extractors/ contacts · sms · whatsapp · photos · voice · documents              │
+│  extractors/ message (shared types) · contacts · sms · whatsapp · photos · ...   │
 │  export/     html · csv · json · files                                           │
 │  thumbs/     thumbnail generation + cache (HEIC, JPEG, PNG, video poster later)  │
 │  search/     FTS5 index over messages                                            │
@@ -163,8 +163,12 @@ pub trait Extractor {
 
 Extractor-specific APIs (examples):
 
-- `sms::list_conversations(&backup, Page) -> Vec<ConversationSummary>`
-- `sms::list_messages(&backup, conv_id, Cursor) -> Page<Message>`
+- `sms::SmsDb::open(&backup)` then `.list_conversations(Page)` and
+  `.list_messages(conversation_id, MessageCursor)`. Opening probes the schema once, so callers
+  making several queries hold one `SmsDb` rather than reopening.
+- Thread pagination is a **keyset** on `(date, ROWID)` descending, not an offset: a thread can
+  hold tens of thousands of messages, where `OFFSET` degrades with depth and can skip or repeat
+  rows. `MessageCursor`/`MessagePage` carry it.
 - `whatsapp::list_chats`, `whatsapp::list_messages`
 - `photos::list_assets(&backup, Filter, Page)`
 - `voice::list_recordings(&backup)`
@@ -269,8 +273,8 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `file_info` | `handle, fileId` | `FileInfoDto` (incl. sniffed mime) |
 | `read_text_preview` | `handle, fileId, maxBytes` | `TextPreview` |
 | `read_hex_preview` | `handle, fileId, offset, len` | `HexPreview` |
-| `sms_conversations` | `handle, page` | `Page<ConversationSummary>` |
-| `sms_messages` | `handle, conversationId, cursor` | `Page<Message>` |
+| `sms_conversations` | `handle, page?` | `Paged<ConversationSummary>` |
+| `sms_messages` | `handle, conversationId, cursor?` | `MessagePage` (messages newest-first, plus the cursor for older) |
 | `wa_chats` | `handle, page` | `Page<ConversationSummary>` |
 | `wa_messages` | `handle, chatId, cursor` | `Page<Message>` |
 | `photos_list` | `handle, filter, page` | `Page<PhotoAsset>` |

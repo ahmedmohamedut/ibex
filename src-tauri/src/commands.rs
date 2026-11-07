@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ibex_core::extractors::sms::{Sms, SmsDb};
+use ibex_core::extractors::{ConversationSummary, Extractor, MessageCursor, MessagePage};
 use ibex_core::util::{mime, plist_text};
 use ibex_core::{Backup, CacheDir, DomainSummary, ManifestEntry, Page, Paged};
 use tauri::State;
@@ -81,16 +83,23 @@ fn detect_sources(backup: &Backup) -> Vec<SourceAvailability> {
                 .ok()
                 .flatten()
                 .is_some_and(|entry| entry.kind.is_dir() || backup.has_data(&entry));
+            // Only SMS has a viewer so far; the rest stay greyed out with a
+            // tooltip saying which milestone brings them.
+            let implemented = *id == Sms::ID;
             SourceAvailability {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
                 available: present,
-                reason: Some(if present {
-                    format!("Found in this backup; the viewer arrives in milestone {milestone}")
-                } else {
-                    format!("Not in this backup, or the app was not installed ({milestone})")
+                reason: Some(match (present, implemented) {
+                    (true, true) => "Found in this backup".to_string(),
+                    (true, false) => {
+                        format!("Found in this backup; the viewer arrives in milestone {milestone}")
+                    }
+                    (false, _) => {
+                        format!("Not in this backup, or the app was not installed ({milestone})")
+                    }
                 }),
-                implemented: false,
+                implemented,
             }
         })
         .collect()
@@ -340,6 +349,37 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[tauri::command]
+pub async fn sms_conversations(
+    state: State<'_, AppState>,
+    handle: String,
+    page: Option<Page>,
+) -> Result<Paged<ConversationSummary>, IpcError> {
+    let backup = state.get(&handle)?;
+    let page = page.unwrap_or_default();
+    blocking(move || {
+        let db = SmsDb::open(&backup)?;
+        Ok(db.list_conversations(page)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn sms_messages(
+    state: State<'_, AppState>,
+    handle: String,
+    conversation_id: String,
+    cursor: Option<MessageCursor>,
+) -> Result<MessagePage, IpcError> {
+    let backup = state.get(&handle)?;
+    let cursor = cursor.unwrap_or_default();
+    blocking(move || {
+        let db = SmsDb::open(&backup)?;
+        Ok(db.list_messages(&conversation_id, cursor)?)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn backup_stats(
     state: State<'_, AppState>,
     handle: String,
@@ -435,8 +475,8 @@ mod tests {
         let sms = sources.iter().find(|s| s.id == "sms").unwrap();
         assert!(sms.available, "the fixture has an sms.db");
         assert!(
-            !sms.implemented,
-            "M1 ships no Messages view, so the sidebar entry stays greyed"
+            sms.implemented,
+            "M2 ships the Messages view, so the sidebar entry is usable"
         );
 
         let whatsapp = sources.iter().find(|s| s.id == "whatsapp").unwrap();

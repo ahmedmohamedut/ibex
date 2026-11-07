@@ -4,6 +4,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { applyTheme, useUi } from "./store/ui";
+import { Messages } from "./views/Messages";
 import { Overview } from "./views/Overview";
 import { Raw } from "./views/Raw";
 import { Welcome } from "./views/Welcome";
@@ -36,7 +37,13 @@ function Shell() {
       {backup ? (
         <div className="body">
           <Sidebar />
-          {section === "raw" ? <Raw /> : <Overview />}
+          {section === "raw" ? (
+            <Raw />
+          ) : section === "messages" ? (
+            <Messages />
+          ) : (
+            <Overview />
+          )}
         </div>
       ) : (
         <Welcome />

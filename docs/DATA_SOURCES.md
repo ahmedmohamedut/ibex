@@ -83,7 +83,39 @@ Never persist the password. Keep unwrapped keys in memory only, zeroize on close
 
 - **File:** `HomeDomain` / `Library/SMS/sms.db` (+ `-wal`, `-shm`)
 - **Attachments:** `MediaDomain` / `Library/SMS/Attachments/...` (the `attachment.filename` column holds `~/Library/SMS/Attachments/...`; strip `~/` and look up in `MediaDomain`).
-- **Option:** use the `imessage-database` crate (GPL-3.0) for table parsing and `attributedBody` decoding, or implement directly. Decide in M2 and record the decision here.
+- **Decided in M2 (2026-11-07): use the `imessage-database` crate** (5.0.1, GPL-3.0-or-later).
+
+  *Why.* On iOS 16+ `message.text` is usually NULL and the real text lives in `attributedBody`, a
+  typedstream — Apple's `NSArchiver` format. Decoding that is the hardest part of reading
+  `sms.db`, and getting it subtly wrong means showing people the wrong message text, the worst
+  failure this app could have. The crate also probes which columns a given iOS version has
+  (`Capabilities::determine`), and already encodes the semantics of tapbacks (including iOS 18
+  custom emoji), threaded replies, edits, fully-unsent messages and group actions.
+
+  *Consequence.* Linking GPL-3.0 code makes ibex a derivative work, so the whole project is
+  **GPL-3.0-or-later**: `LICENSE` at the repo root and `license` fields on all three crates.
+
+  *What we still write ourselves.* Contact resolution from `AddressBook.sqlitedb`; attachment
+  resolution into `MediaDomain` manifest entries (the crate expects a Mac's real filesystem
+  paths, not a backup's hashed layout); pagination; and the mapping onto our normalized
+  `Message` type.
+
+  *How it fits the working-copy rule.* `get_connection` takes a path and opens its own read-only
+  connection, so it is handed our cache copy from `Backup::db_workcopy` — the database in the
+  backup is never touched.
+
+  *Two things worth knowing about its API.* Its message query is hardcoded to
+  `ORDER BY m.date` ascending with no `LIMIT`, so paging is ours: we pick each page's row IDs
+  with a keyset query, narrow `QueryContext`'s `start`/`end` (same Apple-nanosecond units as
+  `m.date`) to that window, and keep the rows we asked for. And `tapbacks_by_target` loads every
+  tapback in the database at once, which suits a one-shot export but not paging a thread, so
+  reactions are fetched per page instead.
+
+- Reading a row runs the crate's `parse_body`, which sets `Message::text` from the typedstream,
+  falling back to a legacy `streamtyped` scan and then to the `text` column. So `text` is already
+  the decoded body; there is no separate call to make.
+- `is_fully_unsent()` reads the `message_summary_info` plist (per-part edit history), *not*
+  `date_retracted`. A message can have the column set without that plist, so ibex checks both.
 
 Key tables:
 

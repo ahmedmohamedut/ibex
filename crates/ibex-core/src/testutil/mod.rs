@@ -18,6 +18,7 @@
 //! ```
 
 mod encryption;
+pub mod sms;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -215,6 +216,25 @@ impl FixtureBackup {
                 &format!("{DIR}/opaque"),
                 &[0u8, 1, 2, 255, 254, 253, 0, 7],
             )
+    }
+
+    /// Add a realistic `sms.db` plus the attachment that goes with it.
+    ///
+    /// See [`sms`] for what the content covers. The attachment referenced as
+    /// present is written into `MediaDomain`; the second one is deliberately
+    /// left out, so the "not in backup" path is exercised.
+    pub fn with_sms(self) -> Self {
+        self.with_db("HomeDomain", "Library/SMS/sms.db", &sms::setup_sql())
+            .with_file("MediaDomain", sms::PRESENT_ATTACHMENT, &samples::png())
+    }
+
+    /// Add an `AddressBook.sqlitedb` with a few synthetic contacts.
+    pub fn with_address_book(self) -> Self {
+        self.with_db(
+            "HomeDomain",
+            "Library/AddressBook/AddressBook.sqlitedb",
+            sms::address_book_sql(),
+        )
     }
 
     /// Add a manifest row whose bytes are deliberately absent.

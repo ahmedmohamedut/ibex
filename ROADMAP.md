@@ -66,14 +66,26 @@ Notes:
   (hard rule 1 verified at real scale). Everything past the password prompt needs M7.
 
 ## M2: SMS / iMessage
-- [ ] Decide: `imessage-database` crate vs own parser (record decision + license impact in DATA_SOURCES.md and README)
-- [ ] Contacts resolver from AddressBook
-- [ ] `sms::list_conversations`, `sms::list_messages` (cursor pagination), attachments resolved to manifest entries, tapbacks as reactions, replies, edited/unsent flags
-- [ ] CLI: `sms convs`, `sms msgs <id> --limit N` (counts/IDs by default)
-- [ ] Tauri commands + Messages view (conversation list, thread, inline attachments, lightbox, day separators, jump to date)
-- [ ] Fixture + unit tests; real-backup structure test
+- [x] Decide: `imessage-database` crate vs own parser (record decision + license impact in DATA_SOURCES.md and README)
+- [x] Contacts resolver from AddressBook
+- [x] `sms::list_conversations`, `sms::list_messages` (cursor pagination), attachments resolved to manifest entries, tapbacks as reactions, replies, edited/unsent flags
+- [x] CLI: `sms convs`, `sms msgs <id> --limit N` (counts/IDs by default)
+- [x] Tauri commands + Messages view (conversation list, thread, inline attachments, lightbox, day separators)
+- [~] Jump to date — not built. Replies jump to their parent, and threads open at the newest message, but there is no date picker; it is most useful together with M8's search, so it waits for that.
+- [x] Fixture + unit tests; real-backup structure test
 
 **Done when:** you can read any SMS/iMessage conversation with its pictures and attachments in the app.
+
+Notes:
+- **ibex is now GPL-3.0-or-later**, because `imessage-database` is. `LICENSE` added, `license`
+  fields set on all three crates. **README.md is mode 444, so its "Licence: to be decided"
+  section is still wrong** — the replacement text is in the M2 summary and needs pasting by hand.
+- Verified end to end against the synthetic fixture: a message whose text exists *only* as an
+  `attributedBody` typedstream blob round-trips to "Text that lives only in attributedBody", which
+  is the whole reason for taking the crate on.
+- The conversation list's message count excludes tapbacks, so it agrees with what the thread
+  actually lists. A test asserts the two match for every conversation.
+- Still unverified against real data: the iOS 27 `sms.db` schema. Needs the backup password.
 
 ## M3: WhatsApp
 - [ ] Detect WhatsApp and WhatsApp Business containers
