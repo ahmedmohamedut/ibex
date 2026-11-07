@@ -1,0 +1,16 @@
+[package]
+name = "ibex-cli"
+description = "Command-line tool over ibex-core, for debugging backups"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Writes a synthetic backup to disk, for exercising the CLI without a real one.
+fixture = ["ibex-core/testutil"]
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+clap = { version = "4.6.7", features = ["derive"] }
+ibex-core = { workspace = true }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
