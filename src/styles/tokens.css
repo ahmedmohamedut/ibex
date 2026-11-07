@@ -1,0 +1,56 @@
+/* Theme tokens. See docs/UI_DESIGN.md. */
+:root {
+  --bg: #ffffff;
+  --bg-elev: #f6f6f7;
+  --bg-sidebar: #efeff1;
+  --border: #e2e2e6;
+  --text: #1c1c1e;
+  --text-muted: #6b6b73;
+  --accent: #0a7cff;
+  --accent-text: #ffffff;
+  --bubble-me: #0a7cff;
+  --bubble-me-text: #ffffff;
+  --bubble-them: #e9e9eb;
+  --bubble-them-text: #1c1c1e;
+  --bubble-wa-me: #d9fdd3;
+  --bubble-wa-me-text: #111b21;
+  --danger: #d93025;
+  --warning: #b26a00;
+  --radius: 8px;
+  --radius-bubble: 18px;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI", Cantarell, "Noto Sans",
+    sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Source Code Pro", Menlo,
+    Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1c1c1e;
+    --bg-elev: #2c2c2e;
+    --bg-sidebar: #232325;
+    --border: #3a3a3c;
+    --text: #f2f2f7;
+    --text-muted: #9a9aa1;
+    --accent: #3d95ff;
+    --bubble-them: #2c2c2e;
+    --bubble-them-text: #f2f2f7;
+    --bubble-wa-me: #005c4b;
+    --bubble-wa-me-text: #e9edef;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #1c1c1e;
+  --bg-elev: #2c2c2e;
+  --bg-sidebar: #232325;
+  --border: #3a3a3c;
+  --text: #f2f2f7;
+  --text-muted: #9a9aa1;
+  --accent: #3d95ff;
+  --bubble-them: #2c2c2e;
+  --bubble-them-text: #f2f2f7;
+  --bubble-wa-me: #005c4b;
+  --bubble-wa-me-text: #e9edef;
+}
