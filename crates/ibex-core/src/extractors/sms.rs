@@ -37,6 +37,24 @@ const ATTACHMENT_DOMAIN: &str = "MediaDomain";
 /// `U+FFFC` per attachment and `U+FFFD` for app messages.
 const PLACEHOLDER_CHARS: [char; 2] = ['\u{FFFC}', '\u{FFFD}'];
 
+/// SQL predicate: this row is a tapback, so it belongs on another message
+/// rather than in the thread.
+///
+/// The ranges matter and are easy to get wrong. `associated_message_type` is
+/// **not** simply "non-zero means tapback": a real iOS 27 backup carries
+/// ordinary messages with codes 2 and 3, and the library classifies 0, 2 and 3
+/// alike as normal. Only 1000 (sticker tapback) and the 2000-2007 / 3000-3007
+/// ranges are tapbacks; 4000 is a poll vote, which stays in the thread.
+const IS_TAPBACK_SQL: &str = "(coalesce(m.associated_message_type, 0) = 1000 \
+     OR coalesce(m.associated_message_type, 0) BETWEEN 2000 AND 2007 \
+     OR coalesce(m.associated_message_type, 0) BETWEEN 3000 AND 3007)";
+
+/// Whether an `associated_message_type` marks a tapback. Mirrors
+/// [`IS_TAPBACK_SQL`].
+fn is_tapback_code(code: i64) -> bool {
+    code == 1000 || (2000..=2007).contains(&code) || (3000..=3007).contains(&code)
+}
+
 /// The SMS/iMessage extractor.
 pub struct Sms;
 
@@ -105,20 +123,22 @@ impl<'a> SmsDb<'a> {
 
         // Counts and last-activity come from one grouped query rather than a
         // query per chat, which would be hundreds of round trips.
-        let sql = "
+        let sql = &format!(
+            "
             SELECT c.ROWID, c.display_name, c.chat_identifier, c.style, c.service_name,
                    -- Tapbacks are folded into the messages they target, so
                    -- they must not inflate the count either, or the list and
                    -- the thread disagree about how many messages there are.
-                   count(CASE WHEN coalesce(m.associated_message_type, 0) = 0
-                              THEN j.message_id END),
+                   count(CASE WHEN NOT {IS_TAPBACK} THEN j.message_id END),
                    max(m.date)
             FROM chat c
             LEFT JOIN chat_message_join j ON j.chat_id = c.ROWID
             LEFT JOIN message m ON m.ROWID = j.message_id
             GROUP BY c.ROWID
             ORDER BY max(m.date) IS NULL, max(m.date) DESC, c.ROWID DESC
-            LIMIT ?1 OFFSET ?2";
+            LIMIT ?1 OFFSET ?2",
+            IS_TAPBACK = IS_TAPBACK_SQL
+        );
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map([page.sql_limit(), page.sql_offset()], |row| {
             Ok((
@@ -196,15 +216,15 @@ impl<'a> SmsDb<'a> {
 
     /// Add a one-line preview to each conversation, newest message first.
     fn fill_previews(&self, items: &mut [ConversationSummary]) -> Result<()> {
-        let mut stmt = self.conn.prepare(
+        let sql = format!(
             "SELECT m.text, m.cache_has_attachments, m.associated_message_type
              FROM chat_message_join j
              JOIN message m ON m.ROWID = j.message_id
-             WHERE j.chat_id = ?1
-               AND coalesce(m.associated_message_type, 0) = 0
+             WHERE j.chat_id = ?1 AND NOT {IS_TAPBACK_SQL}
              ORDER BY m.date DESC, m.ROWID DESC
-             LIMIT 1",
-        )?;
+             LIMIT 1"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         for item in items.iter_mut() {
             let Ok(chat_id) = item.id.parse::<i64>() else {
                 continue;
@@ -246,16 +266,16 @@ impl<'a> SmsDb<'a> {
         // values keep (date, ROWID) ordered and unique, so paging cannot skip
         // or repeat a message.
         let picks: Vec<(i64, i64)> = {
-            let mut stmt = self.conn.prepare(
+            let sql = format!(
                 "SELECT m.ROWID, m.date
                  FROM chat_message_join j
                  JOIN message m ON m.ROWID = j.message_id
-                 WHERE j.chat_id = ?1
-                   AND coalesce(m.associated_message_type, 0) = 0
+                 WHERE j.chat_id = ?1 AND NOT {IS_TAPBACK_SQL}
                    AND (?2 IS NULL OR (m.date, m.ROWID) < (?2, ?3))
                  ORDER BY m.date DESC, m.ROWID DESC
-                 LIMIT ?4",
-            )?;
+                 LIMIT ?4"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
             let rows = stmt.query_map(
                 rusqlite::params![
                     chat_id,
@@ -436,7 +456,7 @@ impl<'a> SmsDb<'a> {
              JOIN message m ON m.ROWID = j.message_id
              WHERE j.chat_id = ?1
                AND m.associated_message_guid IS NOT NULL
-               AND coalesce(m.associated_message_type, 0) <> 0",
+               AND {IS_TAPBACK_SQL}",
             emoji = if has_emoji {
                 "m.associated_message_emoji"
             } else {
@@ -471,8 +491,8 @@ impl<'a> SmsDb<'a> {
                 } else {
                     self.handle_participant(handle_id)
                 },
-                // 3000-3005 record the removal of the matching 2000-2005.
-                removed: (3000..=3999).contains(&code),
+                // 3000-3007 record the removal of the matching 2000-2007.
+                removed: (3000..=3007).contains(&code),
                 at: date.and_then(from_apple),
             };
             messages[index].reactions.push(reaction);
@@ -631,14 +651,20 @@ fn reaction_kind(code: i64, emoji: Option<&str>) -> ReactionKind {
     if let Some(emoji) = emoji.map(str::trim).filter(|e| !e.is_empty()) {
         return ReactionKind::Emoji(emoji.to_string());
     }
-    // 2000-2005 add a tapback, 3000-3005 remove the same one.
+    // 2000-2007 add a tapback, 3000-3007 remove the same one; 1000 is a
+    // sticker placed on a message.
+    if !is_tapback_code(code) {
+        return ReactionKind::Unknown(code);
+    }
     match code % 1000 {
-        0 if (2000..=3999).contains(&code) => ReactionKind::Loved,
-        1 if (2000..=3999).contains(&code) => ReactionKind::Liked,
-        2 if (2000..=3999).contains(&code) => ReactionKind::Disliked,
-        3 if (2000..=3999).contains(&code) => ReactionKind::Laughed,
-        4 if (2000..=3999).contains(&code) => ReactionKind::Emphasized,
-        5 if (2000..=3999).contains(&code) => ReactionKind::Questioned,
+        0 if code != 1000 => ReactionKind::Loved,
+        1 => ReactionKind::Liked,
+        2 => ReactionKind::Disliked,
+        3 => ReactionKind::Laughed,
+        4 => ReactionKind::Emphasized,
+        5 => ReactionKind::Questioned,
+        // 2006/2007 are the custom-emoji and sticker tapbacks, whose glyph
+        // comes from associated_message_emoji; without it there is no label.
         _ => ReactionKind::Unknown(code),
     }
 }
@@ -977,6 +1003,64 @@ mod tests {
         assert_eq!(clean_target_guid("weird/guid"), "weird/guid");
     }
 
+    /// Found on a real iOS 27.2 backup: ordinary messages carrying
+    /// `associated_message_type` 2 and 3. Treating "non-zero" as "tapback"
+    /// silently dropped them from the thread.
+    #[test]
+    fn codes_two_and_three_are_messages_not_tapbacks() {
+        assert!(!is_tapback_code(0));
+        assert!(!is_tapback_code(2));
+        assert!(!is_tapback_code(3));
+        // A poll vote stays in the thread too.
+        assert!(!is_tapback_code(4000));
+
+        // Only these are tapbacks.
+        assert!(is_tapback_code(1000));
+        for code in 2000..=2007 {
+            assert!(is_tapback_code(code), "{code}");
+        }
+        for code in 3000..=3007 {
+            assert!(is_tapback_code(code), "{code}");
+        }
+        assert!(!is_tapback_code(1999));
+        assert!(!is_tapback_code(2008));
+        assert!(!is_tapback_code(3008));
+    }
+
+    #[test]
+    fn a_message_with_associated_type_two_still_appears_in_the_thread() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = open_fixture(tmp.path());
+        let db = SmsDb::open(&backup).unwrap();
+
+        let page = db.list_messages("1", MessageCursor::first(500)).unwrap();
+        let found = page
+            .messages
+            .iter()
+            .find(|m| m.id == fixture::ASSOCIATED_TYPE_TWO_GUID);
+        assert!(
+            found.is_some(),
+            "a code-2 message must stay in the thread, not be treated as a tapback"
+        );
+        assert_eq!(
+            found.unwrap().body.as_deref(),
+            Some("Fixture associated type two")
+        );
+
+        // And it must not have been folded into its associated message as a
+        // reaction either.
+        let parent = page
+            .messages
+            .iter()
+            .find(|m| m.id == fixture::REPLY_PARENT_GUID)
+            .unwrap();
+        assert!(
+            parent.reactions.is_empty(),
+            "code 2 is not a reaction; got {:?}",
+            parent.reactions
+        );
+    }
+
     #[test]
     fn reaction_codes_map_to_kinds() {
         assert_eq!(reaction_kind(2000, None), ReactionKind::Loved);
@@ -990,6 +1074,10 @@ mod tests {
         assert_eq!(reaction_kind(3005, None), ReactionKind::Questioned);
         // Unrecognised codes are kept rather than dropped.
         assert_eq!(reaction_kind(1234, None), ReactionKind::Unknown(1234));
+        // Codes that are not tapbacks at all never become a named reaction.
+        assert_eq!(reaction_kind(2, None), ReactionKind::Unknown(2));
+        assert_eq!(reaction_kind(3, None), ReactionKind::Unknown(3));
+        assert_eq!(reaction_kind(4000, None), ReactionKind::Unknown(4000));
         // iOS 18 custom emoji wins over the code.
         assert_eq!(
             reaction_kind(2006, Some("🎉")),

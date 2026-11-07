@@ -121,7 +121,7 @@ Key tables:
 
 | Table | Notes |
 |---|---|
-| `message` | `ROWID`, `guid`, `text`, `attributedBody` (typedstream blob; holds the text when `text` is NULL, common on iOS 16+), `handle_id`, `service` (`SMS`, `iMessage`, `RCS`), `date`, `date_read`, `date_delivered`, `is_from_me`, `cache_has_attachments`, `associated_message_guid` + `associated_message_type` (tapbacks: 2000–2005 add, 3000–3005 remove), `thread_originator_guid` (inline replies), `date_edited`, `date_retracted`, `item_type`, `group_action_type`, `balloon_bundle_id` |
+| `message` | `ROWID`, `guid`, `text`, `attributedBody` (typedstream blob; holds the text when `text` is NULL, common on iOS 16+), `handle_id`, `service` (`SMS`, `iMessage`, `RCS`), `date`, `date_read`, `date_delivered`, `is_from_me`, `cache_has_attachments`, `associated_message_guid` + `associated_message_type` (tapbacks: **1000, 2000–2007 add, 3000–3007 remove**; **0, 2 and 3 are ordinary messages**, and 4000 is a poll vote — see the 2026-11-08 note below), `thread_originator_guid` (inline replies), `date_edited`, `date_retracted`, `item_type`, `group_action_type`, `balloon_bundle_id` |
 | `handle` | `ROWID`, `id` (phone number or email), `service` |
 | `chat` | `ROWID`, `guid`, `chat_identifier`, `display_name`, `style` (43 = group, 45 = 1:1), `service_name` |
 | `chat_message_join` | `chat_id`, `message_id`, `message_date` |
@@ -131,7 +131,9 @@ Key tables:
 
 Rules:
 - Conversation = `chat`. Messages via `chat_message_join`, ordered by `message.date`.
-- Skip tapback rows as standalone messages; attach them as reactions to their target (`associated_message_guid` looks like `p:0/<guid>` or `bp:<guid>`).
+- Skip tapback rows as standalone messages; attach them as reactions to their target
+  (`associated_message_guid` looks like `p:0/<guid>` or `bp:<guid>`). **A non-zero
+  `associated_message_type` does not mean tapback** — see the 2026-11-08 note.
 - Body text: `text` if non-empty, else decode `attributedBody`. The object replacement character `\u{FFFC}` marks attachment positions.
 - Sender for group messages: `message.handle_id` → `handle.id` → contact resolver.
 
@@ -226,6 +228,61 @@ Note: if the backup is iOS 13+ and an app opted out of backup, its documents sim
 | Telegram, Signal | not in backups in a readable form (Signal excludes itself; Telegram stores in its own encrypted DB) |
 
 ## Learned facts log
+
+### 2026-11-08: first *readable* real backup (iOS 27.2, iPhone19,7)
+
+A second backup was taken with a known password, so everything below is measured against real
+data rather than assumed. 45 GB, 70,534 files, **115,762 manifest entries across 1,891 domains**,
+`sms.db` 87 MB with **17,588 message rows**.
+
+**The MBFile epoch question is settled: Unix seconds, as implemented.** File dates across
+`HomeDomain/Library` span 2023-04-11 to 2026-11-07 18:57:38, and that newest value matches the
+backup's own timestamp. Read as Apple-epoch they would all have landed past 2050. The
+`from_unix_secs` / `from_apple` split in `util::time` is correct.
+
+**`fileID` = SHA-1 of `"<domain>-<relativePath>"` confirmed** by recomputing 437 sampled rows,
+all matching.
+
+**Decryption yields real content**, not plausible-looking garbage: 60 of 60 sampled decrypted
+files in `Library/Preferences` sniff to a recognisable type.
+
+**`associated_message_type` is not a simple "non-zero means tapback" flag.** This backup holds
+**no tapbacks at all**, but 8 rows with code **2** and 8 with code **3** — ordinary messages that
+are merely *associated* with another. The library classifies 0, 2 and 3 alike as normal; only
+**1000** (sticker) and **2000–2007** / **3000–3007** are tapbacks, and **4000** is a poll vote.
+ibex had been excluding every non-zero code, which silently dropped those 16 messages from their
+threads. Fixed, with a fixture message carrying code 2 and a regression test.
+
+**attributedBody decoding earns its keep.** 104 of 17,588 messages have `text` NULL with an
+`attributedBody` blob, so they would render blank without decoding the typedstream. Measured
+through the extractor on real data: 1,619 of 1,629 messages across the five chats richest in
+such rows come back with body text (the remainder are legitimately attachment-only).
+
+**Counts reconcile exactly:** 859 conversations reporting 17,449 messages between them, against
+17,449 non-tapback rows joined to a chat. The other 139 message rows are joined to no chat at
+all — orphans from deleted conversations — and are correctly invisible.
+
+**Not exercised by this backup**, so still only fixture-tested:
+- **Group chats.** All 859 chats are `style` 45 (one-to-one); there is not a single `style` 43.
+- **Tapbacks**, per the above.
+- `service` split is SMS 17,455 / iMessage 133, so iMessage-specific paths get little real
+  coverage.
+
+**iOS 27.2 `message` columns.** Every column ibex depends on is present, including
+`attributedBody`, `associated_message_emoji`, `thread_originator_guid`/`_part`, `date_edited`,
+**`date_retracted`** (which is why reading it directly, alongside the library's
+`message_summary_info` check, is right), `cache_has_attachments`, `item_type`,
+`group_action_type` and `message_summary_info`. New since the table above was written, and worth
+knowing about for later milestones: `schedule_type`, `schedule_state`, `date_updated`,
+`retry_count`, `is_time_sensitive`, `is_critical`, `is_sos`, `sent_or_received_off_grid`,
+`is_pending_satellite_send`, `needs_relay`, `is_kt_verified`, `syndication_ranges`,
+`date_recovered`, `part_count`, `index_state`, `filter_action`/`filter_sub_action`.
+
+**Keybag**, unchanged from the first backup and exactly as this document describes: `VERS` 5,
+`TYPE` 1, `ITER` 10 000, `DPWT` 1, `DPIC` 10 000 000, `DPSL`/`SALT` 20 bytes, 14 class entries,
+44-byte `ManifestKey`. Unlocking the real backup takes **0.8 s** of derivation; opening it end to
+end, including decrypting the 163 MB `Manifest.db` into the cache, takes about 18 s.
+
 
 Add dated notes here when a real backup contradicts or extends the above, e.g.:
 

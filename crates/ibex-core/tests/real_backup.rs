@@ -372,3 +372,115 @@ fn files_decrypt_to_plausible_content() {
          decryption is probably producing garbage"
     );
 }
+
+#[test]
+fn sms_conversation_counts_reconcile_with_the_database() {
+    let backup = backup_or_skip!();
+    use ibex_core::extractors::Extractor;
+    use ibex_core::extractors::sms::{Sms, SmsDb};
+
+    if !Sms::detect(&backup).is_present() {
+        println!("skipping: no sms.db in this backup");
+        return;
+    }
+    let db = SmsDb::open(&backup).unwrap();
+
+    // Every conversation, and the sum of what each claims to hold.
+    let page = db
+        .list_conversations(ibex_core::Page::first(ibex_core::Page::MAX_LIMIT))
+        .unwrap();
+    let claimed: u64 = page.items.iter().map(|c| c.message_count).sum();
+
+    // What the database says, counting only rows that are messages rather than
+    // tapbacks. The ranges matter: a real backup carries ordinary messages with
+    // associated_message_type 2 and 3, so "non-zero" is not "tapback".
+    let actual: i64 = backup
+        .open_db("HomeDomain", "Library/SMS/sms.db")
+        .unwrap()
+        .query_one(
+            "SELECT count(*) FROM chat_message_join j
+             JOIN message m ON m.ROWID = j.message_id
+             WHERE NOT (coalesce(m.associated_message_type, 0) = 1000
+                 OR coalesce(m.associated_message_type, 0) BETWEEN 2000 AND 2007
+                 OR coalesce(m.associated_message_type, 0) BETWEEN 3000 AND 3007)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    println!(
+        "{} conversations claiming {claimed} messages; database has {actual}",
+        page.items.len()
+    );
+    assert_eq!(
+        claimed, actual as u64,
+        "the conversation list must account for every message exactly once"
+    );
+}
+
+#[test]
+fn text_only_in_attributedbody_is_recovered_on_real_data() {
+    let backup = backup_or_skip!();
+    use ibex_core::MessageCursor;
+    use ibex_core::extractors::Extractor;
+    use ibex_core::extractors::sms::{Sms, SmsDb};
+
+    if !Sms::detect(&backup).is_present() {
+        println!("skipping: no sms.db in this backup");
+        return;
+    }
+
+    // Find the chats holding messages whose `text` column is NULL. On iOS 16+
+    // their text lives only in the attributedBody typedstream, so these are
+    // exactly the messages that would render blank without decoding it.
+    let conn = backup.open_db("HomeDomain", "Library/SMS/sms.db").unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT j.chat_id, count(*) FROM chat_message_join j
+             JOIN message m ON m.ROWID = j.message_id
+             WHERE m.text IS NULL AND m.attributedBody IS NOT NULL
+             GROUP BY j.chat_id ORDER BY count(*) DESC LIMIT 5",
+        )
+        .unwrap();
+    let targets: Vec<(i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    if targets.is_empty() {
+        println!("no text-NULL messages in this backup; nothing to check");
+        return;
+    }
+
+    let db = SmsDb::open(&backup).unwrap();
+    let mut recovered = 0usize;
+    let mut checked = 0usize;
+    for (chat_id, _) in &targets {
+        let page = db
+            .list_messages(&chat_id.to_string(), MessageCursor::first(500))
+            .unwrap();
+        for message in &page.messages {
+            checked += 1;
+            if message
+                .body
+                .as_deref()
+                .is_some_and(|b| !b.trim().is_empty())
+            {
+                recovered += 1;
+            }
+        }
+    }
+
+    println!(
+        "{recovered} of {checked} messages across {} chats have body text",
+        targets.len()
+    );
+    // Not all messages have text — attachment-only ones legitimately do not —
+    // but a chat full of blanks would mean decoding had failed outright.
+    assert!(
+        recovered * 2 > checked,
+        "only {recovered} of {checked} messages had text; attributedBody \
+         decoding is probably not working"
+    );
+}

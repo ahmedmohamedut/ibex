@@ -625,7 +625,13 @@ fn sms_conversations_and_messages_come_back_over_ipc() {
     )
     .unwrap();
     let messages = page["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 7, "the tapback must not be listed");
+    // Eight: the tapback is excluded, but the `associated_message_type` 2
+    // message is a message and must be listed.
+    assert_eq!(messages.len(), 8, "the tapback must not be listed");
+    assert!(
+        messages.iter().any(|m| m["id"] == "FIXTURE-MSG-0009"),
+        "a code-2 message must survive the IPC boundary too"
+    );
 
     let find = |id: &str| {
         messages

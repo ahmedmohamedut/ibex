@@ -17,7 +17,7 @@ Goal: open an unencrypted backup and browse its raw file tree from the CLI.
 - [x] Cache dir management (`~/.local/share/ibex/cache/<backup-id>/`)
 - [x] `testutil` synthetic backup builder
 - [x] CLI: `info`, `domains`, `ls <domain> [path]`, `cat <domain> <path> > out`, `sql <domain> <path> "<query>"` (schema/count only by default)
-- [~] Integration test gated by `IBEX_TEST_BACKUP` — written (`crates/ibex-core/tests/real_backup.rs`) and run against a real backup on 2026-11-07, but it **skipped**: that backup is encrypted. M7 has since landed, so it now only needs `IBEX_TEST_PASSWORD` set alongside `IBEX_TEST_BACKUP` to assert for the first time. **Counts as verified once that run happens.**
+- [x] Integration test gated by `IBEX_TEST_BACKUP` — **run against a real backup on 2026-11-08 and passing** (10 tests). Needs `IBEX_TEST_PASSWORD` too for an encrypted backup.
 
 **Done when:** `ibex-cli info $IBEX_TEST_BACKUP` and `ibex-cli ls HomeDomain Library/SMS` work on a real backup.
 
@@ -27,11 +27,10 @@ Notes:
   `domains()` is counts-only with a separate `domains_with_sizes()`; `workcopy` takes
   paths rather than a `Backup`; `Backup::open_with_cache` exists so tests and the app can
   redirect the cache.
-- Unverified assumption: `MBFile`'s `LastModified`/`Birth` are read as **Unix** seconds,
-  not Apple-epoch seconds. Wrong would mean mtimes off by 31 years. **Still unverified** —
-  M7 can now decrypt the manifest, so the check is one password away:
-  `file_dates_are_plausible_which_settles_the_mbfile_epoch_question` in `real_backup.rs` fails
-  if dates fall outside 2007–2030, or just look at the Raw browser's Modified column.
+- **Resolved 2026-11-08:** `MBFile`'s `LastModified`/`Birth` really are **Unix** seconds, as
+  implemented. Real dates run 2023-04-11 to 2026-11-07 18:57:38, the newest matching the backup's
+  own timestamp; an Apple-epoch reading would have put them past 2050. Also confirmed on real
+  data: `fileID` = SHA-1 of `"<domain>-<relativePath>"` (437 rows recomputed).
 
 ## M1: App shell and Raw browser
 Goal: open a backup in the GUI and browse every file.
@@ -85,7 +84,14 @@ Notes:
   is the whole reason for taking the crate on.
 - The conversation list's message count excludes tapbacks, so it agrees with what the thread
   actually lists. A test asserts the two match for every conversation.
-- Still unverified against real data: the iOS 27 `sms.db` schema. Needs the backup password.
+- **Verified against real data 2026-11-08** (iOS 27.2, 17,588 messages, 859 conversations): every
+  column M2 needs is present; per-conversation counts reconcile exactly with the database
+  (17,449 = 17,449); and 1,619 of 1,629 messages in the chats richest in `text`-NULL rows come
+  back with text, so attributedBody decoding works on real data.
+- **Bug found by real data and fixed:** `associated_message_type` 2 and 3 are ordinary messages,
+  not tapbacks. ibex had excluded every non-zero code, dropping 16 real messages from their
+  threads. Only 1000 and 2000–2007 / 3000–3007 are tapbacks. See docs/DATA_SOURCES.md.
+- Group chats remain fixture-only: the real backup has 859 one-to-one chats and no groups.
 
 ## M3: WhatsApp
 - [ ] Detect WhatsApp and WhatsApp Business containers

@@ -30,6 +30,12 @@ pub const EDITED_GUID: &str = "FIXTURE-MSG-0005";
 pub const UNSENT_GUID: &str = "FIXTURE-MSG-0006";
 /// GUID of the message carrying two attachments, one of them absent.
 pub const ATTACHMENTS_GUID: &str = "FIXTURE-MSG-0007";
+/// GUID of a message with `associated_message_type` 2.
+///
+/// Real iOS 27 backups contain these: ordinary messages that are associated
+/// with another one but are *not* tapbacks. Treating "non-zero" as "tapback"
+/// drops them from the thread, so the fixture carries one.
+pub const ASSOCIATED_TYPE_TWO_GUID: &str = "FIXTURE-MSG-0009";
 
 /// Relative path, inside `MediaDomain`, of the attachment that *is* present.
 pub const PRESENT_ATTACHMENT: &str = "Library/SMS/Attachments/ab/01/FIXTURE_IMG.png";
@@ -292,6 +298,19 @@ pub fn setup_sql() -> String {
         at(7)
     ));
 
+    // A message with associated_message_type 2: associated with another
+    // message, but still a message in its own right.
+    sql.push_str(&format!(
+        "INSERT INTO message (guid, text, handle_id, is_from_me, service, date,
+                              associated_message_guid, associated_message_type)
+         VALUES ('{ASSOCIATED_TYPE_TWO_GUID}', 'Fixture associated type two', 1, 0,
+                 'iMessage', {}, 'p:0/{REPLY_PARENT_GUID}', 2);
+         INSERT INTO chat_message_join (chat_id, message_id, message_date)
+         VALUES (1, (SELECT ROWID FROM message WHERE guid = '{ASSOCIATED_TYPE_TWO_GUID}'), {});\n",
+        at(9),
+        at(9)
+    ));
+
     // The attributedBody blob, written as a hex literal.
     sql.push_str(&format!(
         "UPDATE message SET attributedBody = x'{}' WHERE guid = '{ATTRIBUTED_ONLY_GUID}';\n",
@@ -381,7 +400,7 @@ mod tests {
         let messages: i64 = conn
             .query_one("SELECT count(*) FROM message", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(messages, 9);
+        assert_eq!(messages, 10);
         let tapbacks: i64 = conn
             .query_one(
                 "SELECT count(*) FROM message WHERE associated_message_type >= 2000",
