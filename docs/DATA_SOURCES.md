@@ -207,3 +207,42 @@ Add dated notes here when a real backup contradicts or extends the above, e.g.:
 - `2026-11-07` M1: WebKitGTK cannot decode HEIC/HEIF, so those sniff to a distinct
   `PreviewKind::ImageUnsupported` and the UI explains itself instead of showing a broken image.
   Same for TIFF and camera raw. M5's thumbnail service (libheif) is what fixes it.
+
+### 2026-11-07: first real backup inspected (encrypted)
+
+A real backup became available: iPhone19,7 on iOS 27.2 (build 24B119), 45 GB, 71,780 files,
+a 164 MB `Manifest.db`, 1809 installed apps. `Manifest.plist` → `IsEncrypted = true`, so
+**nothing beyond the metadata plists is readable until M7 lands**. Confirmed structurally:
+
+- `Manifest.plist` → `Version` `10.0`, `SystemDomainsVersion` `24.0`, `WasPasscodeSet` true.
+- `ManifestKey` is **44 bytes** = 4-byte little-endian protection class + 40-byte wrapped key,
+  exactly as the scheme above describes.
+- `BackupKeyBag` is 1712 bytes and parses with the documented TLV layout, no deviations:
+
+  | Item | Value |
+  |---|---|
+  | `VERS` | 5 |
+  | `TYPE` | 1 (backup keybag) |
+  | `HMCK` | 40 bytes |
+  | `WRAP` (header) | 0 |
+  | `SALT` | 20 bytes |
+  | `ITER` | 10 000 (PBKDF2-HMAC-SHA1) |
+  | `DPWT` | 1 |
+  | `DPIC` | **10 000 000** (PBKDF2-HMAC-SHA256) |
+  | `DPSL` | 20 bytes |
+
+- 14 per-class entries, for classes 1–11 and 17–19. Every one has `KTYP` 0 (AES) and a
+  40-byte `WPKY` (32-byte key plus the 8 bytes AES key wrap adds). `WRAP` is 2 or 3, so
+  `WRAP & 2` holds throughout and every class key is wrapped with the passcode key.
+
+Two consequences for M7:
+
+1. `DPIC` is ten million SHA-256 iterations. Derivation is deliberately expensive and will
+   take seconds even in release mode, so it must run off the UI thread with a progress or at
+   least a busy state, and a wrong password costs that same wait before it can be reported.
+   Worth measuring and recording the real number.
+2. `Manifest.plist` → `Lockdown` carries `ProductType`, `ProductVersion`, `BuildVersion` and
+   `DeviceClass` in the clear, and `Info.plist` is not encrypted either. The password prompt
+   can therefore name the device it is unlocking. `Backup::open` currently reads `BackupInfo`
+   and then discards it when it returns `PasswordRequired`; M7 should hand that info back
+   (a `Backup::peek(path) -> BackupInfo`, or carry it on the error) so the modal can show it.

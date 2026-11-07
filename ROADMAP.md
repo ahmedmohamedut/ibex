@@ -17,7 +17,7 @@ Goal: open an unencrypted backup and browse its raw file tree from the CLI.
 - [x] Cache dir management (`~/.local/share/ibex/cache/<backup-id>/`)
 - [x] `testutil` synthetic backup builder
 - [x] CLI: `info`, `domains`, `ls <domain> [path]`, `cat <domain> <path> > out`, `sql <domain> <path> "<query>"` (schema/count only by default)
-- [~] Integration test gated by `IBEX_TEST_BACKUP` — written (`crates/ibex-core/tests/real_backup.rs`), but never yet run against a real backup: `IBEX_TEST_BACKUP` was unset on the development machine, so it skipped. **Needs one run against a real backup to count as verified.**
+- [~] Integration test gated by `IBEX_TEST_BACKUP` — written (`crates/ibex-core/tests/real_backup.rs`) and run against a real backup on 2026-11-07, but it **skipped**: that backup is encrypted, so it needs M7 before it can assert anything. The skip path itself is confirmed working. **Still needs an unencrypted backup, or M7, to count as verified.**
 
 **Done when:** `ibex-cli info $IBEX_TEST_BACKUP` and `ibex-cli ls HomeDomain Library/SMS` work on a real backup.
 
@@ -28,7 +28,9 @@ Notes:
   paths rather than a `Backup`; `Backup::open_with_cache` exists so tests and the app can
   redirect the cache.
 - Unverified assumption: `MBFile`'s `LastModified`/`Birth` are read as **Unix** seconds,
-  not Apple-epoch seconds. Wrong would mean mtimes off by 31 years. Confirm on a real backup.
+  not Apple-epoch seconds. Wrong would mean mtimes off by 31 years. **Still unverified** as of
+  2026-11-07: the only real backup available is encrypted, so its `Manifest.db` cannot be read
+  until M7. Confirm as soon as a manifest can be decrypted.
 
 ## M1: App shell and Raw browser
 Goal: open a backup in the GUI and browse every file.
@@ -56,6 +58,11 @@ Notes:
   status/header matrix (200/206/416/404/405).
 - Not verified by me: the GUI's appearance and interaction. The React tree is proven to render
   (server-side render smoke test) and the app launches cleanly, but a human needs to click through.
+- Checked against the real backup on 2026-11-07: opening it reports "this backup is encrypted;
+  a password is required", which is the correct M1 behaviour, and the Welcome screen has a
+  plain-words state for it. No cache directory and no recents entry were created by the failed
+  open. All 72,037 entries in the 45 GB folder were byte-, mtime- and mode-identical afterwards
+  (hard rule 1 verified at real scale). Everything past the password prompt needs M7.
 
 ## M2: SMS / iMessage
 - [ ] Decide: `imessage-database` crate vs own parser (record decision + license impact in DATA_SOURCES.md and README)
@@ -105,6 +112,10 @@ Notes:
 **Done when:** recordings play with their titles, and documents are browsable by app and exportable.
 
 ## M7: Encrypted backups
+> **Promoted in priority.** The only real backup available for development is encrypted
+> (iOS 27.2, keybag details in `docs/DATA_SOURCES.md`), so until this milestone lands, M0 and M1
+> cannot be verified against real data and M2–M6 would be built entirely against synthetic
+> fixtures. Consider doing this before M2.
 - [ ] Keybag TLV parsing, passcode key derivation, class key unwrap (RFC 3394)
 - [ ] Manifest.db decryption to cache; per-file decryption on demand
 - [ ] `zeroize` keys on close; never persist the password
