@@ -40,6 +40,8 @@ macro_rules! ibex_invoke_handler {
             $crate::commands::photo_detail,
             $crate::commands::voice_list,
             $crate::commands::documents_sources,
+            $crate::commands::contacts_list,
+            $crate::commands::call_history_list,
             $crate::commands::backup_stats,
             $crate::commands::save_file_as,
             $crate::commands::clear_cache,

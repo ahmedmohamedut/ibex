@@ -720,9 +720,17 @@ fn the_sidebar_learns_that_messages_is_now_implemented() {
     assert_eq!(sms["implemented"], true, "M2 ships the Messages view");
 
     // M3 ships WhatsApp, M5 ships Photos, M6 ships Voice Memos and
-    // Documents too; the rest are still pending, so the sidebar stays greyed
-    // there.
-    let shipped = ["sms", "whatsapp", "photos", "voice", "documents"];
+    // Documents, M9 ships Contacts and Call History (Notes is deferred); the
+    // rest are still pending, so the sidebar stays greyed there.
+    let shipped = [
+        "sms",
+        "whatsapp",
+        "photos",
+        "voice",
+        "documents",
+        "contacts",
+        "calls",
+    ];
     for source in sources {
         let id = source["id"].as_str().unwrap();
         assert_eq!(
@@ -1026,4 +1034,90 @@ fn the_search_index_builds_as_a_job_and_search_finds_messages_over_ipc() {
     let wa_items = wa_only["items"].as_array().unwrap();
     assert!(!wa_items.is_empty());
     assert!(wa_items.iter().all(|h| h["source"] == "whatsapp"));
+}
+
+#[test]
+fn contacts_and_call_history_come_back_over_ipc_and_contacts_export_to_vcard() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = FixtureBackup::new()
+        .with_address_book()
+        .with_call_history()
+        .build(tmp.path())
+        .unwrap();
+
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let backup = ibex_core::Backup::open_with_cache(
+        &root,
+        None,
+        ibex_core::CacheDir::at(tmp.path().join("cache")),
+    )
+    .unwrap();
+    let handle = app.state::<AppState>().insert(backup);
+
+    // Contacts, in the camelCase shape the generated bindings declare.
+    let contacts = invoke(&webview, "contacts_list", json!({ "handle": handle })).unwrap();
+    let items = contacts["items"].as_array().unwrap();
+    assert_eq!(items.len(), 5);
+    let turing = items
+        .iter()
+        .find(|c| c["lastName"] == "Turing")
+        .expect("the multi-number contact");
+    assert_eq!(turing["displayName"], "Alan Turing");
+    assert_eq!(turing["phones"].as_array().unwrap().len(), 2);
+
+    // Call history resolves contact names and separates FaceTime from
+    // cellular over the real IPC boundary.
+    let calls = invoke(&webview, "call_history_list", json!({ "handle": handle })).unwrap();
+    let calls = calls["items"].as_array().unwrap();
+    assert_eq!(calls.len(), 5);
+    let facetime = calls
+        .iter()
+        .filter(|c| c["service"]["kind"] == "faceTime")
+        .count();
+    assert_eq!(facetime, 1);
+    let resolved = calls
+        .iter()
+        .find(|c| c["contact"]["displayName"] == "Ada Lovelace")
+        .expect("a call resolving to Ada Lovelace");
+    assert_eq!(resolved["contact"]["fromContacts"], true);
+
+    // Exporting contacts reuses start_export as-is — no new export command.
+    let out = tmp.path().join("contacts-out");
+    let job_id = invoke(
+        &webview,
+        "start_export",
+        json!({
+            "handle": handle,
+            "selection": { "source": "contacts", "conversationIds": [] },
+            "format": "files",
+            "outDir": out.to_str().unwrap(),
+            "options": null
+        }),
+    )
+    .unwrap();
+    let job_id = job_id.as_str().unwrap().to_string();
+
+    let mut finished = None;
+    for _ in 0..200 {
+        let jobs = invoke(&webview, "list_jobs", json!({})).unwrap();
+        let job = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["id"] == job_id.as_str())
+            .cloned()
+            .unwrap();
+        if job["state"] != "running" {
+            finished = Some(job);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let job = finished.expect("the contacts export should finish");
+    assert_eq!(job["state"], "finished", "got {job}");
+    assert_eq!(job["report"]["totals"]["messages"], 5);
+    assert!(out.join("Alan Turing.vcf").is_file());
 }

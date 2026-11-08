@@ -309,6 +309,12 @@ Both write a single `ConversationReport` entry rather than one per logical group
 natural grouping the way Photos has year folders — so the UI additionally hides the
 "conversations" row entirely for these two sources rather than showing an always-`1` count.
 
+- `ContactsExporter` (`export/vcard.rs`, `source == "contacts"`, M9) writes one vCard 3.0
+  `.vcf` file per contact, named from its resolved display name through the same
+  `NameAllocator`/`naming::join_safe` every other exporter uses. `conversation_ids` holds
+  contact ids here, empty meaning every contact — the same convention as `voice`/`documents`.
+  Also a single `ConversationReport` entry, same reasoning as above.
+
 `messages_chronological` walks the extractor's existing keyset cursor 500 messages at a time and
 reverses the result, because a thread reads newest-first and an export reads oldest-first.
 
@@ -441,6 +447,8 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `photo_detail` | `handle, id` | `PhotoAsset` |
 | `voice_list` | `handle, page?` | `Paged<VoiceRecording>` |
 | `documents_sources` | `handle` | `Vec<DocSource>` |
+| `contacts_list` | `handle, page?` | `Paged<Contact>` |
+| `call_history_list` | `handle, page?` | `Paged<CallRecord>` |
 | `start_export` | `handle, selection, format, outDir, options?` | `JobId` (returns at once; the work reports by event) |
 | `start_index` | `handle` | `JobId` (returns at once; the work reports by event) |
 | `index_status` | `handle` | `IndexStatus` (whether a usable index already exists) |

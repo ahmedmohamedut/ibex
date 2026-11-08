@@ -13,8 +13,9 @@ use ibex_core::extractors::sms::{Sms, SmsDb};
 use ibex_core::extractors::voice::{VoiceMemos, VoiceMemosDb};
 use ibex_core::extractors::whatsapp::{WhatsApp, WhatsAppDb};
 use ibex_core::extractors::{
-    ConversationSummary, DocSource, Extractor, MessageCursor, MessagePage, PhotoAsset, PhotoCursor,
-    PhotoFilter, PhotoPage, VoiceRecording,
+    CallHistory, CallHistoryDb, CallRecord, Contact, Contacts, ContactsDb, ConversationSummary,
+    DocSource, Extractor, MessageCursor, MessagePage, PhotoAsset, PhotoCursor, PhotoFilter,
+    PhotoPage, VoiceRecording,
 };
 use ibex_core::util::{mime, plist_text};
 use ibex_core::{Backup, CacheDir, DomainSummary, ManifestEntry, Page, Paged};
@@ -81,6 +82,20 @@ fn detect_sources(backup: &Backup) -> Vec<SourceAvailability> {
             "File Provider Storage",
             "M6",
         ),
+        (
+            "contacts",
+            "Contacts",
+            "HomeDomain",
+            "Library/AddressBook/AddressBook.sqlitedb",
+            "M9",
+        ),
+        (
+            "calls",
+            "Call History",
+            "HomeDomain",
+            "Library/CallHistoryDB/CallHistory.storedata",
+            "M9",
+        ),
     ];
 
     PROBES
@@ -97,7 +112,9 @@ fn detect_sources(backup: &Backup) -> Vec<SourceAvailability> {
                 || *id == WhatsApp::ID
                 || *id == Photos::ID
                 || *id == VoiceMemos::ID
-                || *id == "documents";
+                || *id == "documents"
+                || *id == Contacts::ID
+                || *id == CallHistory::ID;
             SourceAvailability {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
@@ -507,6 +524,36 @@ pub async fn documents_sources(
     blocking(move || Ok(ibex_core::extractors::list_document_sources(&backup)?)).await
 }
 
+#[tauri::command]
+pub async fn contacts_list(
+    state: State<'_, AppState>,
+    handle: String,
+    page: Option<Page>,
+) -> Result<Paged<Contact>, IpcError> {
+    let backup = state.get(&handle)?;
+    let page = page.unwrap_or_default();
+    blocking(move || {
+        let db = ContactsDb::open(&backup)?;
+        Ok(db.list(page)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn call_history_list(
+    state: State<'_, AppState>,
+    handle: String,
+    page: Option<Page>,
+) -> Result<Paged<CallRecord>, IpcError> {
+    let backup = state.get(&handle)?;
+    let page = page.unwrap_or_default();
+    blocking(move || {
+        let db = CallHistoryDb::open(&backup)?;
+        Ok(db.list(page)?)
+    })
+    .await
+}
+
 /// Start an export. Returns at once with a job id; progress arrives as events.
 #[tauri::command]
 pub async fn start_export<R: tauri::Runtime>(
@@ -771,7 +818,7 @@ mod tests {
             "the tooltip should say which milestone brings it"
         );
 
-        assert_eq!(sources.len(), 5);
+        assert_eq!(sources.len(), 7);
     }
 
     /// The command bodies need a Tauri `State`, so these exercise the logic
