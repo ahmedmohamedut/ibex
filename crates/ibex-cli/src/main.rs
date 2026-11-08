@@ -52,6 +52,10 @@ enum Command {
     Docs(DocsCommand),
     /// Export conversations to a folder.
     Export(ExportArgs),
+    /// Build the full-text search index over SMS + WhatsApp.
+    Index(IndexArgs),
+    /// Search the index built by `index`.
+    Search(SearchArgs),
     /// Write a synthetic backup, for exercising the CLI without a real one.
     #[cfg(feature = "fixture")]
     Fixture(FixtureArgs),
@@ -160,6 +164,28 @@ struct ExportArgs {
     /// Include WhatsApp status and channel feeds.
     #[arg(long)]
     all_sessions: bool,
+}
+
+#[derive(Args)]
+struct IndexArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+}
+
+#[derive(Args)]
+struct SearchArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    /// The search text.
+    query: String,
+    /// Restrict to one source: sms or whatsapp.
+    #[arg(long)]
+    source: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    limit: u32,
+    /// Show matched snippets. Off by default: these are personal.
+    #[arg(long)]
+    show_content: bool,
 }
 
 #[derive(Subcommand)]
@@ -396,6 +422,8 @@ fn main() -> Result<()> {
         Command::Voice(VoiceCommand::List(args)) => voice_list(args),
         Command::Docs(DocsCommand::Sources(args)) => docs_sources(args),
         Command::Export(args) => export(args),
+        Command::Index(args) => index(args),
+        Command::Search(args) => search_cmd(args),
         #[cfg(feature = "fixture")]
         Command::Fixture(args) => fixture(args),
     }
@@ -746,6 +774,87 @@ fn export(args: &ExportArgs) -> Result<()> {
         println!("Warning        {warning}");
     }
     println!("\nReport         {}/export-report.json", report.output_dir);
+    Ok(())
+}
+
+/// Build the full-text search index over SMS + WhatsApp.
+fn index(args: &IndexArgs) -> Result<()> {
+    use ibex_core::export::{CancelToken, Progress};
+
+    let backup = args.backup.open()?;
+
+    let last = std::cell::Cell::new(0u64);
+    let progress = |p: Progress| {
+        if p.done >= last.get() {
+            eprint!("\r{} ({}/{})", p.message, p.done, p.total.unwrap_or(0));
+            let _ = std::io::stderr().flush();
+            last.set(p.done);
+        }
+    };
+
+    let report = ibex_core::search::build_index(&backup, &progress, &CancelToken::new())?;
+    eprintln!();
+
+    println!("Conversations indexed  {}", report.conversations_indexed);
+    println!("Messages indexed       {}", report.messages_indexed);
+    if report.cancelled {
+        println!("Status                 CANCELLED - this index is incomplete");
+    }
+    Ok(())
+}
+
+/// Search the index built by `index`. Ids and dates by default, snippet
+/// text only on request.
+fn search_cmd(args: &SearchArgs) -> Result<()> {
+    use ibex_core::search::SearchFilters;
+    use ibex_core::{Page, search};
+
+    let backup = args.backup.open()?;
+    let status = search::index_status(&backup)?;
+    if !status.built {
+        bail!("no search index yet; run `ibex-cli index` first");
+    }
+
+    let filters = SearchFilters {
+        source: args.source.clone(),
+        conversation_id: None,
+    };
+    let hits = search::search(&backup, &args.query, &filters, Page::first(args.limit))?;
+
+    println!(
+        "{:<8} {:<9} {:<20}  {}",
+        "SOURCE",
+        "CONV",
+        "SENT",
+        if args.show_content {
+            "SNIPPET"
+        } else {
+            "MESSAGE ID"
+        }
+    );
+    for hit in &hits.items {
+        let sent = hit
+            .sent_at
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let tail = if args.show_content {
+            hit.snippet.replace(['\u{1}', '\u{2}'], "*")
+        } else {
+            hit.message_id.clone()
+        };
+        println!(
+            "{:<8} {:<9} {:<20}  {}",
+            hit.source, hit.conversation_id, sent, tail
+        );
+    }
+    println!(
+        "\n{} of {} match(es)",
+        hits.items.len(),
+        hits.total.unwrap_or(0)
+    );
+    if !args.show_content {
+        println!("(snippets withheld; pass --show-content to print them)");
+    }
     Ok(())
 }
 
