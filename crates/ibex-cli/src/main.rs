@@ -407,6 +407,15 @@ struct LsArgs {
     /// List every entry, paging until the end.
     #[arg(long)]
     all: bool,
+    /// Recurse into subdirectories instead of listing just one level.
+    /// Ignores --limit/--offset/--all; always walks the whole subtree.
+    #[arg(long)]
+    recursive: bool,
+    /// With --recursive, only print files whose path ends with this
+    /// (case-insensitive), e.g. --suffix pdf. Directories are always
+    /// traversed regardless of this filter.
+    #[arg(long)]
+    suffix: Option<String>,
 }
 
 #[derive(Args)]
@@ -610,6 +619,20 @@ fn summarize_with_progress(backup: &Backup) -> Result<Vec<ibex_core::DomainSumma
 fn ls(args: &LsArgs) -> Result<()> {
     let backup = args.backup.open()?;
 
+    if args.recursive {
+        let mut shown = 0u64;
+        walk_dir(
+            &backup,
+            &args.domain,
+            &args.path,
+            args.ids,
+            args.suffix.as_deref(),
+            &mut shown,
+        )?;
+        println!("\n{shown} matching entries");
+        return Ok(());
+    }
+
     let mut shown = 0u64;
     let mut offset = args.offset;
     // The total is the same on every page; keep the first one we are given.
@@ -633,6 +656,49 @@ fn ls(args: &LsArgs) -> Result<()> {
         }
         Some(total) => println!("\n{total} entries"),
         None => println!("\n{shown} entries"),
+    }
+    Ok(())
+}
+
+/// Depth-first walk of a domain subtree, printing files as they're found
+/// (directories are traversed but not printed). `suffix`, when given, is
+/// matched case-insensitively against each file's full relative path.
+fn walk_dir(
+    backup: &Backup,
+    domain: &str,
+    path: &str,
+    show_ids: bool,
+    suffix: Option<&str>,
+    shown: &mut u64,
+) -> Result<()> {
+    let needle = suffix.map(str::to_ascii_lowercase);
+    let mut offset = 0u64;
+    loop {
+        let page = backup.list_dir(domain, path, Page::new(offset, Page::MAX_LIMIT))?;
+        for entry in &page.items {
+            if entry.kind.is_dir() {
+                walk_dir(
+                    backup,
+                    domain,
+                    &entry.relative_path,
+                    show_ids,
+                    suffix,
+                    shown,
+                )?;
+                continue;
+            }
+            let matches = needle
+                .as_deref()
+                .is_none_or(|s| entry.relative_path.to_ascii_lowercase().ends_with(s));
+            if matches {
+                print_entry(entry, show_ids);
+                *shown += 1;
+            }
+        }
+        match page.next_offset {
+            Some(next) => offset = next,
+            None => break,
+        }
     }
     Ok(())
 }
