@@ -554,7 +554,8 @@ pub async fn start_export<R: tauri::Runtime>(
                     "job://finished",
                     JobFinishedEvent {
                         job_id: job_for_task,
-                        report,
+                        report: Some(report),
+                        index_report: None,
                     },
                 );
             }
@@ -574,6 +575,80 @@ pub async fn start_export<R: tauri::Runtime>(
     });
 
     Ok(job_id)
+}
+
+/// Start building the full-text search index. Returns at once with a job id;
+/// progress arrives as events, same as `start_export`.
+#[tauri::command]
+pub async fn start_index<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    handle: String,
+) -> Result<String, IpcError> {
+    let backup = state.get(&handle)?;
+    let (job_id, cancel) = state.jobs().start("index", "Search index");
+
+    let job_for_task = job_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let registry_app = app.clone();
+        let throttle = ProgressThrottle::new(app.clone(), job_for_task.clone());
+        let state = tauri::Manager::state::<AppState>(&registry_app);
+
+        let progress = |p: ibex_core::export::Progress| throttle.emit(&p, state.jobs());
+        let result = ibex_core::search::build_index(&backup, &progress, &cancel);
+
+        match result {
+            Ok(report) => {
+                state.jobs().finished_index(&job_for_task, report.clone());
+                let _ = tauri::Emitter::emit(
+                    &app,
+                    "job://finished",
+                    JobFinishedEvent {
+                        job_id: job_for_task,
+                        report: None,
+                        index_report: Some(report),
+                    },
+                );
+            }
+            Err(error) => {
+                let ipc = IpcError::from(error);
+                state.jobs().failed(&job_for_task, ipc.message.clone());
+                let _ = tauri::Emitter::emit(
+                    &app,
+                    "job://failed",
+                    JobFailedEvent {
+                        job_id: job_for_task,
+                        error: ipc.message,
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(job_id)
+}
+
+/// Whether `handle` already has a usable search index.
+#[tauri::command]
+pub async fn index_status(
+    state: State<'_, AppState>,
+    handle: String,
+) -> Result<ibex_core::IndexStatus, IpcError> {
+    let backup = state.get(&handle)?;
+    blocking(move || Ok(ibex_core::search::index_status(&backup)?)).await
+}
+
+/// Search the index built by `start_index`.
+#[tauri::command]
+pub async fn search(
+    state: State<'_, AppState>,
+    handle: String,
+    query: String,
+    filters: ibex_core::SearchFilters,
+    page: Page,
+) -> Result<Paged<ibex_core::SearchHit>, IpcError> {
+    let backup = state.get(&handle)?;
+    blocking(move || Ok(ibex_core::search::search(&backup, &query, &filters, page)?)).await
 }
 
 /// Ask a running job to stop. The export keeps what it has already written and

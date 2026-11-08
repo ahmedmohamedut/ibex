@@ -442,8 +442,9 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `voice_list` | `handle, page?` | `Paged<VoiceRecording>` |
 | `documents_sources` | `handle` | `Vec<DocSource>` |
 | `start_export` | `handle, selection, format, outDir, options?` | `JobId` (returns at once; the work reports by event) |
-| `start_index` | `handle` | `JobId` |
-| `search` | `handle, query, filters, page` | `Page<SearchHit>` |
+| `start_index` | `handle` | `JobId` (returns at once; the work reports by event) |
+| `index_status` | `handle` | `IndexStatus` (whether a usable index already exists) |
+| `search` | `handle, query, filters, page` | `Paged<SearchHit>` |
 | `cancel_job` | `jobId` | `bool` (whether a running job was asked to stop) |
 | `list_jobs` | | `Vec<JobInfo>` (this session's jobs, newest first, with their reports) |
 | `clear_cache` | `handle` | `u64` (bytes freed) |

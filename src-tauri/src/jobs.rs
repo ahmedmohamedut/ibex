@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use ibex_core::SearchIndexReport;
 use ibex_core::export::{CancelToken, ExportReport};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime};
@@ -43,7 +44,7 @@ pub enum JobState {
 #[ts(export)]
 pub struct JobInfo {
     pub id: JobId,
-    /// What kind of work: `export` for now.
+    /// What kind of work: `export` or `index`.
     pub kind: String,
     /// A short description with no message content in it.
     pub label: String,
@@ -52,6 +53,11 @@ pub struct JobInfo {
     pub total: Option<u64>,
     /// Present once an export has finished.
     pub report: Option<ExportReport>,
+    /// Present once an index build has finished. Additive alongside
+    /// `report` rather than merging the two into one shape, matching how
+    /// `Selection` grew `photo_filter`/`document_root` — a job is one kind
+    /// or the other, never both.
+    pub index_report: Option<SearchIndexReport>,
     pub error: Option<String>,
     pub started_at: String,
 }
@@ -73,7 +79,10 @@ pub struct JobProgressEvent {
 #[ts(export)]
 pub struct JobFinishedEvent {
     pub job_id: JobId,
-    pub report: ExportReport,
+    /// Present for an export job.
+    pub report: Option<ExportReport>,
+    /// Present for an index job.
+    pub index_report: Option<SearchIndexReport>,
 }
 
 /// Payload for `job://failed`.
@@ -115,6 +124,7 @@ impl JobRegistry {
             done: 0,
             total: None,
             report: None,
+            index_report: None,
             error: None,
             started_at: chrono::Utc::now().to_rfc3339(),
         };
@@ -147,6 +157,20 @@ impl JobRegistry {
             job.info.done = report.totals.conversations;
             job.info.total = Some(report.totals.conversations);
             job.info.report = Some(report);
+        }
+    }
+
+    /// Record a finished index build.
+    pub fn finished_index(&self, id: &str, report: SearchIndexReport) {
+        if let Some(job) = self.lock().get_mut(id) {
+            job.info.state = if report.cancelled {
+                JobState::Cancelled
+            } else {
+                JobState::Finished
+            };
+            job.info.done = report.messages_indexed;
+            job.info.total = Some(report.messages_indexed);
+            job.info.index_report = Some(report);
         }
     }
 

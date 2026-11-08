@@ -925,3 +925,105 @@ fn cancelling_an_unknown_job_is_false_not_an_error() {
     let cancelled = invoke(&webview, "cancel_job", json!({ "jobId": "job-nope" })).unwrap();
     assert_eq!(cancelled, false);
 }
+
+#[test]
+fn the_search_index_builds_as_a_job_and_search_finds_messages_over_ipc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = FixtureBackup::new()
+        .with_sms()
+        .with_whatsapp()
+        .with_address_book()
+        .build(tmp.path())
+        .unwrap();
+
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let backup = ibex_core::Backup::open_with_cache(
+        &root,
+        None,
+        ibex_core::CacheDir::at(tmp.path().join("cache")),
+    )
+    .unwrap();
+    let handle = app.state::<AppState>().insert(backup);
+
+    // No index yet.
+    let status = invoke(&webview, "index_status", json!({ "handle": handle })).unwrap();
+    assert_eq!(status["built"], false);
+
+    // Starting returns a job id immediately, same as start_export.
+    let job_id = invoke(&webview, "start_index", json!({ "handle": handle })).unwrap();
+    let job_id = job_id.as_str().expect("a job id").to_string();
+    assert!(job_id.starts_with("job-"), "got {job_id}");
+
+    let jobs = invoke(&webview, "list_jobs", json!({})).unwrap();
+    let listed = jobs.as_array().unwrap();
+    assert!(listed.iter().any(|j| j["id"] == job_id.as_str()));
+    assert_eq!(listed[0]["kind"], "index");
+
+    let mut finished = None;
+    for _ in 0..200 {
+        let jobs = invoke(&webview, "list_jobs", json!({})).unwrap();
+        let job = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["id"] == job_id.as_str())
+            .cloned()
+            .unwrap();
+        if job["state"] != "running" {
+            finished = Some(job);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let job = finished.expect("the index build should finish");
+    assert_eq!(job["state"], "finished", "got {job}");
+    let report = &job["indexReport"];
+    assert_eq!(report["cancelled"], false);
+    assert!(report["messagesIndexed"].as_u64().unwrap() > 0);
+
+    // Now built.
+    let status = invoke(&webview, "index_status", json!({ "handle": handle })).unwrap();
+    assert_eq!(status["built"], true);
+    assert!(status["messagesIndexed"].as_u64().unwrap() > 0);
+
+    // Finds the SMS message whose text lives only in attributedBody — proof
+    // the indexer reused the real decode path, not a raw SQL re-query.
+    let hits = invoke(
+        &webview,
+        "search",
+        json!({
+            "handle": handle,
+            "query": "attributedBody",
+            "filters": { "source": null, "conversationId": null },
+            "page": { "offset": 0, "limit": 20 }
+        }),
+    )
+    .unwrap();
+    let items = hits["items"].as_array().unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|h| h["messageId"] == "FIXTURE-ATTRIBUTED-0001"),
+        "got {items:?}"
+    );
+    assert!(items[0]["snippet"].as_str().unwrap().contains('\u{1}'));
+
+    // The source filter narrows results to just WhatsApp.
+    let wa_only = invoke(
+        &webview,
+        "search",
+        json!({
+            "handle": handle,
+            "query": "fixture",
+            "filters": { "source": "whatsapp", "conversationId": null },
+            "page": { "offset": 0, "limit": 20 }
+        }),
+    )
+    .unwrap();
+    let wa_items = wa_only["items"].as_array().unwrap();
+    assert!(!wa_items.is_empty());
+    assert!(wa_items.iter().all(|h| h["source"] == "whatsapp"));
+}
