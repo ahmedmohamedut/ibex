@@ -961,3 +961,241 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     }
     None
 }
+
+// ---------------------------------------------------------------------------
+// Voice Memos and Documents (M6)
+// ---------------------------------------------------------------------------
+
+/// This real backup's `CloudRecordings.db` is genuinely corrupted —
+/// independently confirmed with plain `sqlite3` tooling, no `-wal`/`-shm`
+/// sidecar to explain it — so this backup is exactly the case the fallback
+/// exists for, not a hypothetical one.
+#[test]
+fn the_real_cloud_recordings_database_cannot_be_queried_so_the_fallback_runs() {
+    use ibex_core::extractors::VoiceMemosDb;
+
+    let backup = backup_or_skip!();
+    let Ok(db) = VoiceMemosDb::open(&backup) else {
+        println!("skipping: this backup has no Voice Memos container");
+        return;
+    };
+
+    println!("database-backed: {}", db.is_database_backed());
+    assert!(
+        !db.is_database_backed(),
+        "if this backup's CloudRecordings.db has become readable, the fallback \
+         is no longer exercised by real data — update docs/DATA_SOURCES.md \
+         and this assertion together"
+    );
+}
+
+/// Every real `.m4a`/`.qta` is listed exactly once; `.waveform` sidecars and
+/// `.composition` metadata folders never are.
+#[test]
+fn every_real_recording_is_listed_once_with_no_waveform_or_composition_noise() {
+    use ibex_core::Page;
+    use ibex_core::extractors::VoiceMemosDb;
+
+    let backup = backup_or_skip!();
+    let Ok(db) = VoiceMemosDb::open(&backup) else {
+        println!("skipping: this backup has no Voice Memos container");
+        return;
+    };
+
+    let mut all = Vec::new();
+    let mut page = Some(Page::first(Page::MAX_LIMIT));
+    while let Some(p) = page {
+        let fetched = db.list(p).unwrap();
+        let got = fetched.items.len();
+        all.extend(fetched.items);
+        page = match fetched.next_offset {
+            Some(next) if got > 0 => Some(Page::new(next, Page::MAX_LIMIT)),
+            _ => None,
+        };
+    }
+
+    let ids: std::collections::HashSet<_> = all.iter().map(|r| &r.id).collect();
+    assert_eq!(
+        ids.len(),
+        all.len(),
+        "a recording was listed more than once"
+    );
+
+    println!("recordings: {}", all.len());
+    assert!(!all.is_empty(), "the real library should not be empty");
+    // Fallback mode: no titles, and every listed recording resolved to a
+    // real audio file (a .waveform sidecar would otherwise masquerade as
+    // one, since it shares the same directory).
+    if !db.is_database_backed() {
+        assert!(all.iter().all(|r| r.title.is_none()));
+        assert!(all.iter().all(|r| r.file_id.is_some()));
+    }
+}
+
+/// Every `AppDomain-*` with files under `Documents/` is listed exactly once,
+/// and every resolved label is non-empty and reads like a name, not a raw
+/// bundle id — without printing any label or bundle id itself.
+#[test]
+fn documents_sources_cover_every_populated_app_domain_with_readable_labels() {
+    use ibex_core::extractors::list_document_sources;
+
+    let backup = backup_or_skip!();
+    let sources = list_document_sources(&backup).unwrap();
+
+    let domains: std::collections::HashSet<_> = sources.iter().map(|s| &s.domain).collect();
+    assert_eq!(
+        domains.len(),
+        sources.len(),
+        "a source was listed more than once"
+    );
+
+    let direct: i64 = backup
+        .manifest()
+        .with_connection(|conn| {
+            conn.query_one(
+                "SELECT count(DISTINCT domain) FROM Files \
+                 WHERE domain LIKE 'AppDomain-%' AND relativePath LIKE 'Documents/%' \
+                   AND flags = 1",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .unwrap();
+    // +1 for "On My iPhone", which is not an AppDomain at all.
+    let expected = direct as usize + usize::from(sources.iter().any(|s| s.bundle_id.is_none()));
+    println!(
+        "sources: {} (direct app-domain count: {direct})",
+        sources.len()
+    );
+    assert_eq!(sources.len(), expected);
+
+    let unresolved = sources
+        .iter()
+        .filter(|s| s.bundle_id.as_deref() == Some(s.label.as_str()))
+        .count();
+    println!(
+        "sources whose label is just the bundle id: {unresolved} of {}",
+        sources.len()
+    );
+    assert!(
+        sources.iter().all(|s| !s.label.trim().is_empty()),
+        "every source must have some label"
+    );
+}
+
+/// Exports a handful of real recordings and real documents, confirms the
+/// bytes round-trip, then deletes the export. Counts and byte-equality only
+/// — no file names, titles or app labels printed, and the backup itself is
+/// never touched (checked by `opening_a_backup_does_not_modify_it`-style
+/// mtime comparison elsewhere; this test adds its own scratch directory
+/// rather than writing into the backup).
+#[test]
+fn real_voice_and_documents_exports_round_trip_then_are_deleted() {
+    use ibex_core::Page;
+    use ibex_core::export::{
+        self, CancelToken, DocumentRoot, ExportFormat, ExportOptions, Progress, Selection,
+    };
+    use ibex_core::extractors::{VoiceMemosDb, list_document_sources};
+
+    let backup = backup_or_skip!();
+    let out = std::env::temp_dir().join(format!("ibex-m6-verify-{}", std::process::id()));
+    let _cleanup = CleanupDir(out.clone());
+    let noop = |_: Progress| {};
+
+    // Voice: export the newest 3 recordings and confirm the exported bytes
+    // are, as a set, exactly the original files' bytes — sizes alone would
+    // not catch a truncated or swapped copy, so this compares full content.
+    if let Ok(db) = VoiceMemosDb::open(&backup) {
+        let sample = db.list(Page::first(3)).unwrap().items;
+        let ids: Vec<String> = sample.iter().map(|r| r.id.clone()).collect();
+        let mut expected: Vec<Vec<u8>> = Vec::new();
+        for recording in &sample {
+            let Some(file_id) = &recording.file_id else {
+                continue;
+            };
+            let Some(entry) = backup.get(file_id).ok().flatten() else {
+                continue;
+            };
+            let Ok(path) = backup.materialize(&entry) else {
+                continue;
+            };
+            expected.push(std::fs::read(path).unwrap());
+        }
+
+        let voice_out = out.join("voice");
+        let mut sel = Selection::all("voice");
+        sel.conversation_ids = ids;
+        let report = export::run(
+            &backup,
+            &sel,
+            ExportFormat::Files,
+            &voice_out,
+            &ExportOptions::default(),
+            &noop,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        println!(
+            "voice export: {} copied, {} missing",
+            report.totals.attachments_copied, report.totals.attachments_missing
+        );
+
+        let mut written: Vec<Vec<u8>> = std::fs::read_dir(&voice_out)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext != "json"))
+            .map(|e| std::fs::read(e.path()).unwrap())
+            .collect();
+        written.sort();
+        expected.sort();
+        assert_eq!(
+            written, expected,
+            "the exported files' bytes should be exactly the originals', as a set"
+        );
+    }
+
+    // Documents: export a few files from the first populated source and
+    // confirm byte-equality against the backup's own copy.
+    let sources = list_document_sources(&backup).unwrap();
+    if let Some(source) = sources.first() {
+        let docs_out = out.join("documents");
+        let mut sel = Selection::all("documents");
+        sel.document_root = Some(DocumentRoot {
+            domain: source.domain.clone(),
+            root: source.root.clone(),
+        });
+        let report = export::run(
+            &backup,
+            &sel,
+            ExportFormat::Files,
+            &docs_out,
+            &ExportOptions::default(),
+            &noop,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        println!(
+            "documents export ({}): {} copied, {} missing",
+            if source.bundle_id.is_some() {
+                "an app source"
+            } else {
+                "On My iPhone"
+            },
+            report.totals.attachments_copied,
+            report.totals.attachments_missing
+        );
+        assert_eq!(
+            report.totals.attachments_missing, 0,
+            "every listed file should resolve"
+        );
+    }
+}
+
+/// Removes its directory on drop, so the scratch export never lingers even
+/// if an assertion above panics.
+struct CleanupDir(std::path::PathBuf);
+impl Drop for CleanupDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}

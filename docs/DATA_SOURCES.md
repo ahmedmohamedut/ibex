@@ -190,11 +190,50 @@ Location changed over iOS versions; probe in order:
 
 1. `AppDomainGroup-group.com.apple.VoiceMemos.shared` / `Recordings/CloudRecordings.db` + `Recordings/*.m4a` (iOS 14+ typical)
 2. `MediaDomain` / `Media/Recordings/Recordings.db` (or `CloudRecordings.db`) + `Media/Recordings/*.m4a` (older)
-3. Fallback: any `.m4a` / `.qta` under the domains above, listed without titles.
+3. **Fallback — not hypothetical.** The real backup's own `CloudRecordings.db` is genuinely
+   corrupted (confirmed independently with plain `sqlite3`: `database disk image is malformed`,
+   with no `-wal`/`-shm` sidecar to explain it), so this path is what that backup actually needs.
+   Lists `.m4a` and `.qta` directly, without titles, ordered by the file's own mtime.
+   **Must skip:** `-trackN.waveform` sidecars (UI waveform data, never audio) and `.composition`
+   directories (hold only an editing `manifest.plist`, no audio at all — the real file is the
+   sibling `.m4a`/`.qta` of the same timestamp).
 
-`CloudRecordings.db` → `ZCLOUDRECORDING`: `ZPATH` (file name), `ZENCRYPTEDTITLE` (the title; the name is historical, it's plain text), `ZCUSTOMLABEL`, `ZDATE`, `ZDURATION`, `ZUNIQUEID`. Folders in `ZFOLDER`.
+`CloudRecordings.db` → `ZCLOUDRECORDING`: `ZPATH` (file name), `ZENCRYPTEDTITLE` (the title; the name is historical, it's plain text), `ZCUSTOMLABEL`, `ZDATE`, `ZDURATION`, `ZUNIQUEID`. Folders in `ZFOLDER`. **Not verified against real data** — the real backup's copy can't be opened at all, so this schema is sourced from community documentation and checked only against a synthetic fixture.
 
-Export name: `<YYYY-MM-DD HHmm> <title>.m4a`, sanitized.
+**`.qta` is a QuickTime container** (`ftyp` says `qt  `), not an M4A/MP4 one — Voice Memos' own
+"edited recording" format, written once noise reduction or multi-take editing is applied. The
+same family `.mov` already plays through via GStreamer's `qtdemux` (the WhatsApp voice-note
+finding above), so it needs no special handling: a plain `<audio>` element plays it the same as
+`.m4a`.
+
+Export name: `<YYYY-MM-DD HHmm> <title or "Recording">.<ext>`, sanitized, extension matching the
+source file (`.m4a` or `.qta`).
+
+## Documents
+
+Sources to present as browsable roots:
+
+1. **Files app "On My iPhone":** `AppDomainGroup-group.com.apple.FileProvider.LocalStorage` / `File Provider Storage/…`
+2. **Per-app `Documents/`:** every `AppDomain-<bundle>` with a non-empty `Documents/` folder.
+3. **Notes attachments** (later): `AppDomainGroup-group.com.apple.notes` / `Accounts/<id>/Media/…`.
+
+Note: if the backup is iOS 13+ and an app opted out of backup, its documents simply aren't there.
+
+**App display names do not live where the obvious reading of "Info.plist → Applications → bundle
+id" suggests.** `Info.plist`'s top-level `Applications` dict *is* keyed by bundle id, but each
+value is `{ApplicationSINF, PlaceholderIcon, iTunesMetadata}` — none of those three is a name.
+`iTunesMetadata` is itself a **nested binary plist** (a `Data` value one more
+`plist::Value::from_reader` away), and *its* `itemName` field is the real App Store title. On the
+real backup, all 110 of its App Store apps resolve this way; the **7 that don't** — `Keynote`,
+`Numbers`, `Pages`, `iMovie`, `GarageBand`, `Sports`, and one oddly-named system entry — are free
+first-party Apple apps with no App Store purchase record at all, so no `Applications` entry
+either. A small built-in table covers the common ones; anything neither source names falls back
+to the bundle id's last segment, title-cased, which is always *something* rather than a raw
+reverse-DNS string.
+
+Real counts on that backup: 92 sources (91 populated app domains + "On My iPhone"), and **zero**
+of them fell through to a raw bundle id — every one resolved through `iTunesMetadata` or the
+first-party table.
 
 ## Photos
 
@@ -207,16 +246,6 @@ Export name: `<YYYY-MM-DD HHmm> <title>.m4a`, sanitized.
 - Live Photos: a still with a `.MOV` sharing its base name. **Not** a row of its own — `ZASSET` has one entry per still, and the companion is found by swapping the extension. `ZKINDSUBTYPE = 2` / `ZPLAYBACKSTYLE = 3` mark the still as Live; `ZAVALANCHEUUID` does **not** — that is burst-shot grouping, set on only 52 of 7,865 real rows.
 - Fallback when `Photos.sqlite` is missing or unparseable: list DCIM files directly, read EXIF dates (`kamadak-exif`). Not exercised by the real backup, whose library parses fine — fixture-tested only.
 
-## Documents
-
-Sources to present as browsable roots:
-
-1. **Files app "On My iPhone":** `AppDomainGroup-group.com.apple.FileProvider.LocalStorage` / `File Provider Storage/…`
-2. **Per-app `Documents/`:** every `AppDomain-<bundle>` with a non-empty `Documents/` folder. Show the app name from `Info.plist` → `Applications` → bundle id when available.
-3. **Notes attachments** (later): `AppDomainGroup-group.com.apple.notes` / `Accounts/<id>/Media/…`.
-
-Note: if the backup is iOS 13+ and an app opted out of backup, its documents simply aren't there.
-
 ## Later sources (not in the first milestones)
 
 | Source | Location |
@@ -226,6 +255,36 @@ Note: if the backup is iOS 13+ and an app opted out of backup, its documents sim
 | Safari history | `HomeDomain` / `Library/Safari/History.db` |
 | Calendar | `HomeDomain` / `Library/Calendar/Calendar.sqlitedb` |
 | Telegram, Signal | not in backups in a readable form (Signal excludes itself; Telegram stores in its own encrypted DB) |
+
+## Learned facts log
+
+### 2026-11-09: Voice Memos and Documents, measured on the real backup (M6)
+
+**`CloudRecordings.db` is genuinely corrupted on this real backup.** Independently confirmed with
+plain Python's `sqlite3` module and the system `sqlite3` CLI — both fail to open it at all
+(`database disk image is malformed`), and there is no `-wal`/`-shm` sidecar that could explain it.
+Not a missing-WAL case like WhatsApp's: a damaged main file. The documented fallback (list
+`.m4a`/`.qta` directly) is therefore not a hypothetical code path here — it is what this backup's
+real Voice Memos view actually runs on, confirmed by: **81 recordings** (52 `.m4a`, 29 `.qta`)
+listed with no titles, no duplicates, and the database schema itself unverified against real
+data as a result — it comes from community documentation and a synthetic fixture only.
+
+**`.qta` is a QuickTime container**, not an M4A/MP4 one (`ftyp` says `qt  `) — Voice Memos' own
+"edited recording" format. The same family `.mov` already plays through via GStreamer's
+`qtdemux` (the WhatsApp voice-note finding), so a plain `<audio>` element plays it the same as
+`.m4a` with no special handling. `.composition` directories (6 on the real backup) hold only an
+editing `manifest.plist` and no audio; the real file is always the sibling `.m4a`/`.qta` of the
+same timestamp (confirmed for all three sampled). `-trackN.waveform` files are UI waveform data,
+never audio — both have to be recognised and skipped, or the recording list shows duplicates or
+unplayable entries.
+
+**App display names are not where `Info.plist → Applications → bundle id` suggests.** Each
+`Applications` entry is `{ApplicationSINF, PlaceholderIcon, iTunesMetadata}` — `iTunesMetadata`
+is itself a nested binary plist, and only *its* `itemName` field is the real title. On this
+backup, all 110 App Store apps resolve this way; the 7 that don't are free first-party Apple apps
+with no purchase record at all, covered instead by a small built-in table. Real result: **92
+Files sources** (91 populated app domains plus "On My iPhone"), and **zero** of them fell through
+to a raw bundle id.
 
 ## Learned facts log
 
@@ -278,8 +337,6 @@ with members where the real count, confirmed by a direct join on the real
 foreign key, is 7 holding 651 assets. The fix excludes any column containing
 `FOK` explicitly rather than picking "the other `*ASSETS` column" by
 position.
-
-## Learned facts log
 
 ### 2026-11-08: `ZMESSAGECOUNTER` is stale (M4, found by exporting)
 

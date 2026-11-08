@@ -10,10 +10,11 @@ use std::sync::Arc;
 use ibex_core::export::{self, ExportFormat, ExportOptions, Selection};
 use ibex_core::extractors::photos::{Photos, PhotosDb};
 use ibex_core::extractors::sms::{Sms, SmsDb};
+use ibex_core::extractors::voice::{VoiceMemos, VoiceMemosDb};
 use ibex_core::extractors::whatsapp::{WhatsApp, WhatsAppDb};
 use ibex_core::extractors::{
-    ConversationSummary, Extractor, MessageCursor, MessagePage, PhotoAsset, PhotoCursor,
-    PhotoFilter, PhotoPage,
+    ConversationSummary, DocSource, Extractor, MessageCursor, MessagePage, PhotoAsset, PhotoCursor,
+    PhotoFilter, PhotoPage, VoiceRecording,
 };
 use ibex_core::util::{mime, plist_text};
 use ibex_core::{Backup, CacheDir, DomainSummary, ManifestEntry, Page, Paged};
@@ -92,7 +93,11 @@ fn detect_sources(backup: &Backup) -> Vec<SourceAvailability> {
                 .is_some_and(|entry| entry.kind.is_dir() || backup.has_data(&entry));
             // Only SMS has a viewer so far; the rest stay greyed out with a
             // tooltip saying which milestone brings them.
-            let implemented = *id == Sms::ID || *id == WhatsApp::ID || *id == Photos::ID;
+            let implemented = *id == Sms::ID
+                || *id == WhatsApp::ID
+                || *id == Photos::ID
+                || *id == VoiceMemos::ID
+                || *id == "documents";
             SourceAvailability {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
@@ -476,6 +481,30 @@ pub async fn photo_detail(
         db.asset(&id)?.ok_or_else(IpcError::unknown_file)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn voice_list(
+    state: State<'_, AppState>,
+    handle: String,
+    page: Option<Page>,
+) -> Result<Paged<VoiceRecording>, IpcError> {
+    let backup = state.get(&handle)?;
+    let page = page.unwrap_or_default();
+    blocking(move || {
+        let db = VoiceMemosDb::open(&backup)?;
+        Ok(db.list(page)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn documents_sources(
+    state: State<'_, AppState>,
+    handle: String,
+) -> Result<Vec<DocSource>, IpcError> {
+    let backup = state.get(&handle)?;
+    blocking(move || Ok(ibex_core::extractors::list_document_sources(&backup)?)).await
 }
 
 /// Start an export. Returns at once with a job id; progress arrives as events.

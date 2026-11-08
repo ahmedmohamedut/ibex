@@ -5,11 +5,13 @@ import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { applyTheme, useUi } from "./store/ui";
 import { Exports } from "./views/Exports";
+import { Files } from "./views/Files";
 import { JobToasts } from "./components/JobToasts";
 import { Messages } from "./views/Messages";
 import { Overview } from "./views/Overview";
 import { Photos } from "./views/Photos";
 import { Raw } from "./views/Raw";
+import { VoiceMemos } from "./views/VoiceMemos";
 import { WhatsApp } from "./views/WhatsApp";
 import { Welcome } from "./views/Welcome";
 
@@ -49,6 +51,10 @@ function Shell() {
             <WhatsApp />
           ) : section === "photos" ? (
             <Photos />
+          ) : section === "voice" ? (
+            <VoiceMemos />
+          ) : section === "documents" ? (
+            <Files />
           ) : section === "exports" ? (
             <Exports />
           ) : (

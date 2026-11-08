@@ -6,12 +6,15 @@
 //! treat every chat source the same way. See `docs/ARCHITECTURE.md`.
 
 pub mod contacts;
+pub mod documents;
 pub mod message;
 pub mod photos;
 pub mod sms;
+pub mod voice;
 pub mod whatsapp;
 
 pub use contacts::ContactResolver;
+pub use documents::{DocSource, list_document_sources};
 pub use message::{
     AttachmentRef, ConversationSummary, Message, MessageCursor, MessageKind, MessagePage,
     Participant, Reaction, ReactionKind, Service,
@@ -20,6 +23,7 @@ pub use photos::{
     AlbumSummary, MonthCount, PhotoAsset, PhotoAvailability, PhotoCursor, PhotoFilter, PhotoKind,
     PhotoPage, Photos, PhotosDb,
 };
+pub use voice::{RecordingAvailability, VoiceMemos, VoiceMemosDb, VoiceRecording};
 
 /// Whether a source is usable in a given backup.
 #[derive(Debug, Clone, PartialEq, Eq)]

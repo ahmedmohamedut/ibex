@@ -204,11 +204,38 @@ Notes:
   lightbox vs the WebKitGTK-can't-decode-it baseline also needs eyes, not just a byte comparison.
 
 ## M6: Voice Memos and Documents
-- [ ] Voice Memos: probe locations, titles from CloudRecordings.db, list/play/export with titled file names
-- [ ] Documents: Files app storage + per-app Documents roots with app names; Files view with previews
-- [ ] Batch export for both
+- [x] Voice Memos: probe locations, titles from CloudRecordings.db, list/play/export with titled file names
+- [x] Documents: Files app storage + per-app Documents roots with app names; Files view with previews
+- [x] Batch export for both
 
 **Done when:** recordings play with their titles, and documents are browsable by app and exportable.
+
+Notes:
+- **The real backup's `CloudRecordings.db` is genuinely corrupted** — confirmed independently
+  with plain `sqlite3` tooling, no `-wal`/`-shm` sidecar to explain it — so the documented
+  fallback (list `.m4a`/`.qta` directly, no titles) is what this real backup's Voice Memos view
+  actually runs on: **81 recordings**, zero duplicates, confirmed against real data. The database
+  schema itself is therefore sourced from community documentation and a synthetic fixture only,
+  not a readable real database — the reverse of M5's DCIM fallback, which stayed fixture-only
+  because the real `Photos.sqlite` happened to parse fine.
+- `.qta` (29 of the 81 real recordings) is a QuickTime container, the same family `.mov` already
+  plays via GStreamer; `.composition` folders hold no audio and `-trackN.waveform` files are UI
+  data only — both are skipped, not listed as recordings.
+- **Documents needed no new browsing code at all.** `Backup::list_dir` already works for any
+  domain; the only gap was naming the starting points. Found in the process:
+  `docs/DATA_SOURCES.md`'s own note on where app display names live was wrong — the real source
+  is a nested binary plist inside `Info.plist`, not a flat name field — corrected there, with the
+  fix giving readable labels for all 92 of the real backup's sources and zero raw bundle ids.
+- Both exporters reuse `ConversationReport`/`ExportTotals` rather than growing parallel fields,
+  the same choice M5 made for Photos; `Selection` gained one more additive field
+  (`document_root`) alongside M5's `photo_filter`.
+- Verified on real data: 81 recordings via the fallback; 92 Files sources, matching a direct
+  count against the manifest exactly; a real export of 3 recordings and 5 On-My-iPhone documents,
+  byte-compared against the originals; the backup folder's mtimes unchanged afterward.
+- **Not verified by me:** that recordings actually *play*, titles included — the one real backup
+  available has no titles to show, since its database is unreadable, so the "plays with its
+  title" half of this milestone's own done-when is proven only against the fixture. A `.qta`
+  recording's playback also needs ears, the same caveat as every audio/video claim so far.
 
 ## M7: Encrypted backups
 > **Done out of order, ahead of M2.** The only real backup available for development is

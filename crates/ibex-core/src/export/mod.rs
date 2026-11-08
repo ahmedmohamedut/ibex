@@ -18,12 +18,14 @@
 //!   rather than passing off a partial folder as finished.
 
 pub mod csv;
+pub mod documents;
 pub mod files;
 pub mod html;
 pub mod json;
 pub mod naming;
 pub mod photos;
 pub mod source;
+pub mod voice;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -68,10 +70,12 @@ impl ExportFormat {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Selection {
-    /// Source id: `sms`, `whatsapp` or `photos`.
+    /// Source id: `sms`, `whatsapp`, `photos`, `voice` or `documents`.
     pub source: String,
     /// For a chat source: conversation ids, or empty for every conversation.
-    /// For `photos`: explicit asset ids, or empty to use `photo_filter`.
+    /// For `photos`/`voice`: explicit asset/recording ids, or empty for
+    /// everything. For `documents`: paths relative to `document_root`, or
+    /// empty for everything under it.
     pub conversation_ids: Vec<String>,
     /// `photos` only. Which assets `conversation_ids` being empty means:
     /// defaults to the same view the grid shows (trashed and hidden
@@ -80,6 +84,21 @@ pub struct Selection {
     /// compatible change to a struct the IPC layer already shares.
     #[serde(default)]
     pub photo_filter: Option<crate::extractors::PhotoFilter>,
+    /// `documents` only: which source and base path `conversation_ids` is
+    /// relative to. Additive and optional for the same reason `photo_filter`
+    /// is.
+    #[serde(default)]
+    pub document_root: Option<DocumentRoot>,
+}
+
+/// A Files source and, optionally, a sub-folder within it to export from.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DocumentRoot {
+    pub domain: String,
+    /// Path within the domain. `conversation_ids` is relative to this.
+    pub root: String,
 }
 
 impl Selection {
@@ -89,6 +108,7 @@ impl Selection {
             source: source.to_string(),
             conversation_ids: vec![id.to_string()],
             photo_filter: None,
+            document_root: None,
         }
     }
 
@@ -98,6 +118,7 @@ impl Selection {
             source: source.to_string(),
             conversation_ids: Vec::new(),
             photo_filter: None,
+            document_root: None,
         }
     }
 
@@ -330,11 +351,17 @@ pub fn run(
     progress: &dyn Fn(Progress),
     cancel: &CancelToken,
 ) -> Result<ExportReport> {
-    // Photos has one export shape — original files, named and dated — rather
-    // than the four formats a chat source offers, so it is selected by
-    // source id and the requested `format` is not consulted.
-    if sel.source == "photos" {
-        return photos::PhotosExporter.export(backup, sel, out, opts, progress, cancel);
+    // Photos, Voice Memos and Documents each have one export shape — original
+    // files, named and dated — rather than the four formats a chat source
+    // offers, so they are selected by source id and the requested `format`
+    // is not consulted.
+    match sel.source.as_str() {
+        "photos" => return photos::PhotosExporter.export(backup, sel, out, opts, progress, cancel),
+        "voice" => return voice::VoiceExporter.export(backup, sel, out, opts, progress, cancel),
+        "documents" => {
+            return documents::DocumentsExporter.export(backup, sel, out, opts, progress, cancel);
+        }
+        _ => {}
     }
     match format {
         ExportFormat::Html => html::HtmlExporter.export(backup, sel, out, opts, progress, cancel),

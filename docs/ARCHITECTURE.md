@@ -94,6 +94,15 @@ Key operations:
 
 The `file` column blob is an NSKeyedArchiver plist. `util::nskeyedarchiver` resolves `$objects`/`UID` references into a plain `plist::Dictionary`.
 
+**`backup::info` also resolves app display names**, into `BackupInfo.app_names: HashMap<String,
+String>`. `Info.plist`'s `Applications` dict is keyed by bundle id, but a value there is
+`{ApplicationSINF, PlaceholderIcon, iTunesMetadata}` — `iTunesMetadata` is itself a nested binary
+plist (a `Data` value), and only its `itemName` field is the real App Store title. Free
+first-party apps have no `Applications` entry at all; `extractors::documents::app_name` falls
+back to a small built-in table for those, then to a prettified bundle id for anything neither
+source names. Malformed entries for one app never fail the whole map — that app is simply absent
+from it.
+
 ### workcopy
 
 SQLite databases in a backup often have `-wal` and `-shm` siblings holding recent data. A working copy:
@@ -184,8 +193,18 @@ Extractor-specific APIs (examples):
   `(ZDATECREATED, Z_PK)`. A `DcimFallback` (`extractors::photos::dcim`) lists `Media/DCIM`
   directly with EXIF dates when `Photos.sqlite` is missing or unreadable; fixture-tested only —
   the real backup's library parses.
-- `voice::list_recordings(&backup)`
-- `documents::list_sources(&backup)`, `documents::list_dir(...)`
+- `voice::VoiceMemosDb::open(&backup)` then `.list(Page)`. Primary path reads
+  `CloudRecordings.db` → `ZCLOUDRECORDING`; falls back to listing `.m4a`/`.qta` directly (skipping
+  `-trackN.waveform` sidecars and `.composition` metadata folders) whenever the database is
+  missing **or present but fails even a basic query** — the real backup this was built against is
+  the latter, independently confirmed corrupt, so the fallback is exercised by real data, not just
+  a fixture.
+- `documents::list_document_sources(&backup) -> Vec<DocSource>` names the browsable roots — "On My
+  iPhone" plus one entry per `AppDomain-<bundle>` with a non-empty `Documents/`. Browsing itself
+  needs nothing new: a `DocSource { domain, root, label, bundle_id }` is just handed to the
+  existing `Backup::list_dir`/`file_info`/preview commands, the same ones the Raw browser already
+  calls. App display names resolve through `BackupInfo::app_names`, built in `backup/info.rs` from
+  a nested plist inside `Info.plist` — see the note under `backup::info` below.
 - `contacts::resolver(&backup) -> ContactResolver` (normalizes phone numbers and emails, maps to display names; used by sms and whatsapp)
 
 Messages normalize to shared types so the UI and exporters handle both SMS and WhatsApp the same way:
@@ -269,6 +288,26 @@ same name. `ConversationReport`/`ExportTotals` are reused rather than given a pa
 shape — `messages`/`conversations` become counts of items/year-folders — and the UI relabels them
 per `report.source` rather than the DTO gaining chat-specific-sounding fields photos would have to
 leave blank.
+
+**Voice Memos and Documents follow the same `Selection.source` dispatch**, selected ahead of
+Photos' check in `export::run`:
+
+- `VoiceExporter` (`export/voice.rs`, `source == "voice"`) writes
+  `<YYYY-MM-DD HHmm> <title or "Recording">.<ext>` (extension matching the source file, `.m4a` or
+  `.qta`). No filter field is needed — `conversation_ids` empty means every recording, exactly as
+  for a chat source.
+- `DocumentsExporter` (`export/documents.rs`, `source == "documents"`) copies files preserving
+  their folder structure under the chosen root. `Selection` grew a second additive field,
+  `document_root: Option<DocumentRoot>` (`{domain, root}`), naming which Files source
+  `conversation_ids` (relative paths, or empty for everything) is relative to. Recurses through
+  `Backup::list_dir` itself — there is no database to page through — and sanitizes **every path
+  segment individually** through `naming::join_safe` before writing, because a manifest path is a
+  real historical device path, never guaranteed filesystem-safe on this OS and never trusted as
+  pre-sanitized just because it came from the backup rather than from message data.
+
+Both write a single `ConversationReport` entry rather than one per logical group — there is no
+natural grouping the way Photos has year folders — so the UI additionally hides the
+"conversations" row entirely for these two sources rather than showing an always-`1` count.
 
 `messages_chronological` walks the extractor's existing keyset cursor 500 messages at a time and
 reverses the result, because a thread reads newest-first and an export reads oldest-first.
@@ -400,8 +439,8 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `photos_timeline` | `handle, filter?` | `Vec<MonthCount>` (newest month first) |
 | `photos_albums` | `handle` | `Vec<AlbumSummary>` (titled albums only) |
 | `photo_detail` | `handle, id` | `PhotoAsset` |
-| `voice_list` | `handle` | `Vec<VoiceRecording>` |
-| `docs_sources` | `handle` | `Vec<DocSource>` |
+| `voice_list` | `handle, page?` | `Paged<VoiceRecording>` |
+| `documents_sources` | `handle` | `Vec<DocSource>` |
 | `start_export` | `handle, selection, format, outDir, options?` | `JobId` (returns at once; the work reports by event) |
 | `start_index` | `handle` | `JobId` |
 | `search` | `handle, query, filters, page` | `Page<SearchHit>` |
@@ -415,6 +454,10 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `total_cache_size` | | `u64` |
 
 Events: `job://progress` `{ jobId, done, total, message }`, `job://finished` `{ jobId, report }`, `job://failed` `{ jobId, error }`.
+
+Browsing a Documents source adds no commands of its own: `documents_sources` names the roots, and
+the frontend points the existing `list_dir`/`file_info`/preview commands at one source's
+`domain`/`root` — the same calls the Raw browser already makes.
 
 Keep this table in sync with the code.
 

@@ -38,6 +38,8 @@ macro_rules! ibex_invoke_handler {
             $crate::commands::photos_timeline,
             $crate::commands::photos_albums,
             $crate::commands::photo_detail,
+            $crate::commands::voice_list,
+            $crate::commands::documents_sources,
             $crate::commands::backup_stats,
             $crate::commands::save_file_as,
             $crate::commands::clear_cache,

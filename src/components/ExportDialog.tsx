@@ -2,12 +2,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, Share } from "lucide-react";
 import { useState } from "react";
 import { useStartExport } from "../api/jobs";
+import type { DocumentRoot } from "../bindings/DocumentRoot";
 import type { ExportFormat } from "../bindings/ExportFormat";
 import type { PhotoFilter } from "../bindings/PhotoFilter";
 import { formatCount } from "./format";
 import { toastError } from "./Toasts";
 
-/** Which conversations — or, for photos, which assets — to export. */
+/** Which conversations — or, for photos/voice/documents, which items — to
+ * export. */
 export type ExportScope =
   | { kind: "conversation"; id: string; label: string }
   | { kind: "section" }
@@ -18,6 +20,19 @@ export type ExportScope =
       label: string;
       /** An explicit multi-selection, overriding the filter when present. */
       assetIds?: string[];
+    }
+  | {
+      kind: "voice";
+      label: string;
+      /** An explicit multi-selection, or every recording when absent. */
+      recordingIds?: string[];
+    }
+  | {
+      kind: "documents";
+      label: string;
+      root: DocumentRoot;
+      /** Paths relative to `root`, or everything under it when absent. */
+      paths?: string[];
     };
 
 const FORMATS: { value: ExportFormat; label: string; detail: string }[] = [
@@ -44,21 +59,30 @@ export function ExportDialog(props: {
   messageCount?: number;
   onClose: () => void;
 }) {
-  const isPhotos = props.source === "photos";
+  // Photos, Voice Memos and Documents each have exactly one export shape
+  // (the files themselves), so the format picker and the chat-only options
+  // below are all gated on this rather than on `props.source`.
+  const isFileBased =
+    props.scope.kind === "photos" ||
+    props.scope.kind === "voice" ||
+    props.scope.kind === "documents";
   const startExport = useStartExport();
-  const [format, setFormat] = useState<ExportFormat>(isPhotos ? "files" : "html");
+  const [format, setFormat] = useState<ExportFormat>(isFileBased ? "files" : "html");
   const [includeAttachments, setIncludeAttachments] = useState(true);
   const [includeBroadcasts, setIncludeBroadcasts] = useState(false);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
   const scopeLabel =
-    props.scope.kind === "conversation" || props.scope.kind === "photos"
+    props.scope.kind === "conversation" ||
+    props.scope.kind === "photos" ||
+    props.scope.kind === "voice" ||
+    props.scope.kind === "documents"
       ? props.scope.label
       : props.source === "whatsapp"
         ? "every WhatsApp chat"
         : "every conversation";
-  const itemWord = isPhotos ? "item" : "message";
+  const itemWord = isFileBased ? "item" : "message";
 
   const submit = async () => {
     try {
@@ -73,9 +97,15 @@ export function ExportDialog(props: {
               ? [props.scope.id]
               : props.scope.kind === "photos" && props.scope.assetIds
                 ? props.scope.assetIds
-                : [],
+                : props.scope.kind === "voice" && props.scope.recordingIds
+                  ? props.scope.recordingIds
+                  : props.scope.kind === "documents" && props.scope.paths
+                    ? props.scope.paths
+                    : [],
           photoFilter:
             props.scope.kind === "photos" ? props.scope.filter : null,
+          documentRoot:
+            props.scope.kind === "documents" ? props.scope.root : null,
         },
         format,
         outDir: dest,
@@ -115,7 +145,7 @@ export function ExportDialog(props: {
           .
         </p>
 
-        {isPhotos ? null : (
+        {isFileBased ? null : (
           <fieldset style={{ border: 0, padding: 0, margin: "0 0 12px" }}>
             <legend className="card__title" style={{ padding: 0 }}>
               Format
@@ -147,7 +177,7 @@ export function ExportDialog(props: {
           <legend className="card__title" style={{ padding: 0 }}>
             Options
           </legend>
-          {isPhotos ? null : (
+          {isFileBased ? null : (
             <label style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0" }}>
               <input
                 type="checkbox"

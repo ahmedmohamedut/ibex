@@ -27,6 +27,7 @@ function emptyInfo(): BackupPeek["info"] {
     phoneNumber: null,
     lastBackupDate: null,
     installedApps: [],
+    appNames: {},
     encrypted: true,
     passcodeSet: null,
     manifestVersion: null,

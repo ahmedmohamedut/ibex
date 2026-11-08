@@ -44,6 +44,12 @@ enum Command {
     /// The camera roll.
     #[command(subcommand)]
     Photos(PhotosCommand),
+    /// Voice Memos.
+    #[command(subcommand)]
+    Voice(VoiceCommand),
+    /// Files: On My iPhone and per-app Documents.
+    #[command(subcommand)]
+    Docs(DocsCommand),
     /// Export conversations to a folder.
     Export(ExportArgs),
     /// Write a synthetic backup, for exercising the CLI without a real one.
@@ -240,6 +246,35 @@ struct PhotosListArgs {
     show_content: bool,
 }
 
+#[derive(Subcommand)]
+enum VoiceCommand {
+    /// List recordings, newest first.
+    List(VoiceListArgs),
+}
+
+#[derive(Args)]
+struct VoiceListArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    #[arg(long, default_value_t = 50)]
+    limit: u32,
+    /// Show titles. Off by default: a recording's title is personal.
+    #[arg(long)]
+    show_content: bool,
+}
+
+#[derive(Subcommand)]
+enum DocsCommand {
+    /// List the browsable Files sources: On My iPhone and per-app Documents.
+    Sources(DocsSourcesArgs),
+}
+
+#[derive(Args)]
+struct DocsSourcesArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+}
+
 #[derive(Args)]
 struct SmsConvsArgs {
     #[command(flatten)]
@@ -358,6 +393,8 @@ fn main() -> Result<()> {
         Command::Photos(PhotosCommand::Timeline(args)) => photos_timeline(args),
         Command::Photos(PhotosCommand::Albums(args)) => photos_albums(args),
         Command::Photos(PhotosCommand::Audit(args)) => photos_audit(args),
+        Command::Voice(VoiceCommand::List(args)) => voice_list(args),
+        Command::Docs(DocsCommand::Sources(args)) => docs_sources(args),
         Command::Export(args) => export(args),
         #[cfg(feature = "fixture")]
         Command::Fixture(args) => fixture(args),
@@ -1372,4 +1409,87 @@ struct AuditTotals {
     edited_resolved: u64,
     cloud_only: u64,
     missing: u64,
+}
+
+fn voice_list(args: &VoiceListArgs) -> Result<()> {
+    use ibex_core::Page;
+    use ibex_core::extractors::{RecordingAvailability, VoiceMemosDb};
+
+    let backup = args.backup.open()?;
+    let db = VoiceMemosDb::open(&backup).context("opening the Voice Memos library")?;
+    let page = db.list(Page::first(args.limit))?;
+
+    println!(
+        "source: {}",
+        if db.is_database_backed() {
+            "CloudRecordings.db"
+        } else {
+            "file listing (database missing or unreadable)"
+        }
+    );
+    println!(
+        "{:<8} {:<17} {:>8}  {:>10}  {}",
+        "ID",
+        "DATE",
+        "DURATION",
+        "BYTES",
+        if args.show_content { "TITLE" } else { "STATUS" }
+    );
+    for recording in &page.items {
+        let date = recording
+            .created_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let duration = recording
+            .duration
+            .map(|d| format!("{:.0}s", d))
+            .unwrap_or_else(|| "-".to_string());
+        let tail = if args.show_content {
+            recording
+                .title
+                .clone()
+                .unwrap_or_else(|| "(untitled)".to_string())
+        } else {
+            match recording.availability {
+                RecordingAvailability::InBackup => "in backup".to_string(),
+                RecordingAvailability::Missing => "missing".to_string(),
+            }
+        };
+        println!(
+            "{:<8} {:<17} {:>8}  {:>10}  {}",
+            recording.id,
+            date,
+            duration,
+            recording.size.unwrap_or(0),
+            tail,
+        );
+    }
+    println!(
+        "\n{} of {} recordings",
+        page.items.len(),
+        page.total.unwrap_or(0)
+    );
+    if !args.show_content {
+        println!("(titles withheld; pass --show-content to print them)");
+    }
+    Ok(())
+}
+
+fn docs_sources(args: &DocsSourcesArgs) -> Result<()> {
+    use ibex_core::extractors::list_document_sources;
+
+    let backup = args.backup.open()?;
+    let sources = list_document_sources(&backup).context("listing Files sources")?;
+
+    println!("{:<60} {:<20} LABEL", "DOMAIN", "BUNDLE ID");
+    for source in &sources {
+        println!(
+            "{:<60} {:<20} {}",
+            source.domain,
+            source.bundle_id.as_deref().unwrap_or("-"),
+            source.label,
+        );
+    }
+    println!("\n{} source(s)", sources.len());
+    Ok(())
 }

@@ -6,6 +6,7 @@
 //! `None` rather than failing the open — a backup we can partly describe is far
 //! more useful than an error. See `docs/DATA_SOURCES.md`.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -37,6 +38,17 @@ pub struct BackupInfo {
     pub last_backup_date: Option<DateTime<Utc>>,
     /// Bundle identifiers of the apps installed at backup time.
     pub installed_apps: Vec<String>,
+    /// Bundle id to the app's real display name, for the ones we could
+    /// resolve one for.
+    ///
+    /// `Info.plist`'s top-level `Applications` dict does **not** hold names
+    /// directly — each entry is `{ApplicationSINF, PlaceholderIcon,
+    /// iTunesMetadata}`, and `iTunesMetadata` is itself a nested plist (a
+    /// `Data` value) whose `itemName` is the real App Store title. Free
+    /// first-party Apple apps have no `Applications` entry at all — see
+    /// `extractors::documents::first_party_app_name` for the small table
+    /// that covers them instead.
+    pub app_names: HashMap<String, String>,
     /// From `Manifest.plist`. Drives the password prompt.
     pub encrypted: bool,
     /// Whether a passcode was set on the device.
@@ -79,6 +91,7 @@ impl BackupInfo {
             info.phone_number = dict_string(plist, "Phone Number");
             info.last_backup_date = dict_date(plist, "Last Backup Date");
             info.installed_apps = string_array(plist, "Installed Applications");
+            info.app_names = app_display_names(plist);
         }
 
         if let Some(plist) = &status_plist {
@@ -226,6 +239,26 @@ fn dict_date(plist: &Value, key: &str) -> Option<DateTime<Utc>> {
     Some(DateTime::<Utc>::from(std::time::SystemTime::from(date)))
 }
 
+/// Bundle id to display name, from `Applications.<bundleId>.iTunesMetadata`.
+///
+/// Each value there is a `Data`-typed nested plist, not a plain string, so
+/// this parses one more plist per app rather than reading a field directly.
+/// A malformed or missing entry for one app just means that one app is
+/// absent from the map — never an error for the whole backup.
+fn app_display_names(plist: &Value) -> HashMap<String, String> {
+    let Some(apps) = dict_get(plist, "Applications").and_then(Value::as_dictionary) else {
+        return HashMap::new();
+    };
+    apps.iter()
+        .filter_map(|(bundle_id, entry)| {
+            let meta_bytes = entry.as_dictionary()?.get("iTunesMetadata")?.as_data()?;
+            let meta = Value::from_reader(std::io::Cursor::new(meta_bytes)).ok()?;
+            let name = dict_string(&meta, "itemName")?;
+            Some((bundle_id.clone(), name))
+        })
+        .collect()
+}
+
 fn string_array(plist: &Value, key: &str) -> Vec<String> {
     dict_get(plist, key)
         .and_then(Value::as_array)
@@ -253,6 +286,65 @@ mod tests {
             d.insert(k.to_string(), v);
         }
         Value::Dictionary(d)
+    }
+
+    fn itunes_metadata_entry(item_name: &str) -> Value {
+        let meta = dict(vec![("itemName", Value::String(item_name.to_string()))]);
+        let mut bytes = Vec::new();
+        meta.to_writer_binary(&mut bytes).unwrap();
+        dict(vec![("iTunesMetadata", Value::Data(bytes))])
+    }
+
+    #[test]
+    fn app_names_resolve_through_the_nested_itunes_metadata_plist() {
+        let plist = dict(vec![(
+            "Applications",
+            dict(vec![(
+                "com.example.app",
+                itunes_metadata_entry("Example App"),
+            )]),
+        )]);
+        let names = app_display_names(&plist);
+        assert_eq!(
+            names.get("com.example.app").map(String::as_str),
+            Some("Example App")
+        );
+    }
+
+    #[test]
+    fn an_app_with_no_applications_entry_at_all_is_simply_absent() {
+        // The real backup this was built against has seven free first-party
+        // apps in `Installed Applications` with no `Applications` entry at
+        // all. The map must not error, just omit them.
+        let names = app_display_names(&dict(vec![]));
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_itunes_metadata_blob_does_not_fail_the_whole_map() {
+        let plist = dict(vec![(
+            "Applications",
+            dict(vec![
+                ("com.good.app", itunes_metadata_entry("Good App")),
+                (
+                    "com.bad.app",
+                    dict(vec![(
+                        "iTunesMetadata",
+                        Value::Data(vec![0xFF, 0xFE, 0xFD]),
+                    )]),
+                ),
+            ]),
+        )]);
+        let names = app_display_names(&plist);
+        assert_eq!(
+            names.len(),
+            1,
+            "the one malformed entry should just be skipped"
+        );
+        assert_eq!(
+            names.get("com.good.app").map(String::as_str),
+            Some("Good App")
+        );
     }
 
     #[test]

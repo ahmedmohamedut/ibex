@@ -33,6 +33,19 @@ serialNumber: string | null, phoneNumber: string | null, lastBackupDate: string 
  */
 installedApps: Array<string>, 
 /**
+ * Bundle id to the app's real display name, for the ones we could
+ * resolve one for.
+ *
+ * `Info.plist`'s top-level `Applications` dict does **not** hold names
+ * directly — each entry is `{ApplicationSINF, PlaceholderIcon,
+ * iTunesMetadata}`, and `iTunesMetadata` is itself a nested plist (a
+ * `Data` value) whose `itemName` is the real App Store title. Free
+ * first-party Apple apps have no `Applications` entry at all — see
+ * `extractors::documents::first_party_app_name` for the small table
+ * that covers them instead.
+ */
+appNames: { [key in string]: string }, 
+/**
  * From `Manifest.plist`. Drives the password prompt.
  */
 encrypted: boolean, 

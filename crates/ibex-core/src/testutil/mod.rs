@@ -20,6 +20,7 @@
 mod encryption;
 pub mod photos;
 pub mod sms;
+pub mod voice;
 pub mod whatsapp;
 
 use std::collections::BTreeSet;
@@ -67,7 +68,8 @@ pub struct FixtureBackup {
     /// Set by `encrypted_with_password`: the fixture's contents really are
     /// encrypted with keys derived from this password.
     password: Option<String>,
-    installed_apps: Vec<String>,
+    /// Bundle id, and its App Store display name when it should have one.
+    installed_apps: Vec<(String, Option<String>)>,
     entries: Vec<FixtureEntry>,
 }
 
@@ -125,7 +127,17 @@ impl FixtureBackup {
     }
 
     pub fn with_installed_app(mut self, bundle_id: &str) -> Self {
-        self.installed_apps.push(bundle_id.to_string());
+        self.installed_apps.push((bundle_id.to_string(), None));
+        self
+    }
+
+    /// Like [`Self::with_installed_app`], but with a resolvable App Store
+    /// display name — a real `Applications.<bundleId>.iTunesMetadata` entry,
+    /// not a flat name field, because that is what `Info.plist` actually
+    /// holds.
+    pub fn with_installed_app_named(mut self, bundle_id: &str, display_name: &str) -> Self {
+        self.installed_apps
+            .push((bundle_id.to_string(), Some(display_name.to_string())));
         self
     }
 
@@ -249,6 +261,78 @@ impl FixtureBackup {
             )
             .with_file(DOMAIN, &wa::stored_path(wa::PREVIEW_PATH), &samples::png())
         // MISSING_PATH is intentionally not written.
+    }
+
+    /// Add a realistic Voice Memos library: a readable `CloudRecordings.db`
+    /// with titled, untitled and missing-file recordings, plus the files
+    /// themselves, a `.composition` metadata folder and a `.waveform`
+    /// sidecar that must never be listed as recordings.
+    pub fn with_voice_memos(self) -> Self {
+        use voice as vm;
+        self.with_db(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, "CloudRecordings.db"),
+            &vm::cloud_recordings_sql(),
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, vm::TITLED_PATH),
+            &vm::m4a(),
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, vm::UNTITLED_PATH),
+            &vm::m4a(),
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, vm::QTA_PATH),
+            &vm::qta(),
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, vm::WAVEFORM_PATH),
+            b"not audio, just waveform points",
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}/manifest.plist", vm::DIR, vm::COMPOSITION_DIR),
+            &samples::binary_plist(),
+        )
+        // MISSING_PATH is intentionally not written.
+    }
+
+    /// The same library, but with a `CloudRecordings.db` that opens as a
+    /// connection and then fails every real query — the real backup this
+    /// project was built against is in exactly this state. Only the files
+    /// are written; there is no readable database content to query.
+    pub fn with_corrupted_voice_memos(self) -> Self {
+        use voice as vm;
+        self.with_file(
+            vm::DOMAIN,
+            &format!("{}/CloudRecordings.db", vm::DIR),
+            &vm::corrupted_db(),
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, vm::TITLED_PATH),
+            &vm::m4a(),
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, vm::QTA_PATH),
+            &vm::qta(),
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}", vm::DIR, vm::WAVEFORM_PATH),
+            b"not audio, just waveform points",
+        )
+        .with_file(
+            vm::DOMAIN,
+            &format!("{}/{}/manifest.plist", vm::DIR, vm::COMPOSITION_DIR),
+            &samples::binary_plist(),
+        )
     }
 
     /// Add a realistic camera roll: `Photos.sqlite`, the asset files, Apple's
@@ -494,10 +578,29 @@ impl FixtureBackup {
             Value::Array(
                 self.installed_apps
                     .iter()
-                    .map(|a| Value::String(a.clone()))
+                    .map(|(bundle_id, _)| Value::String(bundle_id.clone()))
                     .collect(),
             ),
         );
+        // Only the apps given a display name get an `Applications` entry, so
+        // a fixture can also model the real first-party apps that have none.
+        let mut applications = Dictionary::new();
+        for (bundle_id, name) in &self.installed_apps {
+            let Some(name) = name else { continue };
+            let mut meta = Dictionary::new();
+            meta.insert("itemName".into(), Value::String(name.clone()));
+            let mut meta_bytes = Vec::new();
+            Value::Dictionary(meta)
+                .to_writer_binary(&mut meta_bytes)
+                .expect("encoding a fixture plist cannot fail");
+
+            let mut entry = Dictionary::new();
+            entry.insert("iTunesMetadata".into(), Value::Data(meta_bytes));
+            applications.insert(bundle_id.clone(), Value::Dictionary(entry));
+        }
+        if !applications.is_empty() {
+            info.insert("Applications".into(), Value::Dictionary(applications));
+        }
         write_plist(&root.join("Info.plist"), Value::Dictionary(info))?;
 
         let mut manifest = Dictionary::new();

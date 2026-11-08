@@ -49,11 +49,23 @@ export function Exports() {
                   <>
                     <dt>Format</dt>
                     <dd>{report.format}</dd>
-                    <dt>{report.source === "photos" ? "Folders" : "Conversations"}</dt>
-                    <dd>{formatCount(report.totals.conversations)}</dd>
-                    <dt>{report.source === "photos" ? "Items" : "Messages"}</dt>
+                    {report.source === "voice" || report.source === "documents" ? null : (
+                      <>
+                        <dt>{report.source === "photos" ? "Folders" : "Conversations"}</dt>
+                        <dd>{formatCount(report.totals.conversations)}</dd>
+                      </>
+                    )}
+                    <dt>
+                      {report.source === "photos" ||
+                      report.source === "voice" ||
+                      report.source === "documents"
+                        ? "Items"
+                        : "Messages"}
+                    </dt>
                     <dd>{formatCount(report.totals.messages)}</dd>
-                    {report.source === "photos" ? null : (
+                    {report.source === "photos" ||
+                    report.source === "voice" ||
+                    report.source === "documents" ? null : (
                       <>
                         <dt>Attachments</dt>
                         <dd>
@@ -64,7 +76,10 @@ export function Exports() {
                         </dd>
                       </>
                     )}
-                    {report.source === "photos" && report.totals.attachmentsMissing > 0 ? (
+                    {(report.source === "photos" ||
+                      report.source === "voice" ||
+                      report.source === "documents") &&
+                    report.totals.attachmentsMissing > 0 ? (
                       <>
                         <dt>Missing</dt>
                         <dd>

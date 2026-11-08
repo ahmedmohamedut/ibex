@@ -10,19 +10,28 @@ import { toastError } from "./Toasts";
 function summarise(job: JobInfo): string {
   const report = job.report;
   if (!report) return job.label;
-  // Photos has no "conversations" or "messages": the chat-shaped report
-  // fields are reused as a count of folders and items, so the label matches.
-  const isPhotos = report.source === "photos";
-  const parts = isPhotos
-    ? [
-        `${formatCount(report.totals.conversations)} folder(s)`,
-        `${formatCount(report.totals.messages)} item(s)`,
-      ]
-    : [
-        `${formatCount(report.totals.conversations)} conversation(s)`,
-        `${formatCount(report.totals.messages)} message(s)`,
-      ];
-  if (!isPhotos && report.totals.attachmentsCopied > 0) {
+  // The chat-shaped report fields (conversations/messages/attachments) are
+  // reused for every source, so the *label* has to adapt rather than the
+  // DTO growing a parallel set of fields each source would leave half
+  // empty. Photos' "conversations" are year folders, worth naming; Voice
+  // Memos and Documents each write everything as one report entry, so that
+  // count is never worth showing.
+  const parts: string[] = [];
+  if (report.source === "photos") {
+    parts.push(`${formatCount(report.totals.conversations)} folder(s)`);
+    parts.push(`${formatCount(report.totals.messages)} item(s)`);
+  } else if (report.source === "voice" || report.source === "documents") {
+    parts.push(`${formatCount(report.totals.messages)} item(s)`);
+  } else {
+    parts.push(`${formatCount(report.totals.conversations)} conversation(s)`);
+    parts.push(`${formatCount(report.totals.messages)} message(s)`);
+  }
+  if (
+    report.source !== "photos" &&
+    report.source !== "voice" &&
+    report.source !== "documents" &&
+    report.totals.attachmentsCopied > 0
+  ) {
     parts.push(`${formatCount(report.totals.attachmentsCopied)} attachment(s)`);
   }
   if (report.totals.bytesWritten > 0) {
@@ -121,7 +130,11 @@ export function JobToasts() {
                   <>
                     <br />
                     {formatCount(job.report.totals.attachmentsMissing)}{" "}
-                    {job.report.source === "photos" ? "item(s)" : "attachment(s)"}
+                    {job.report.source === "photos" ||
+                    job.report.source === "voice" ||
+                    job.report.source === "documents"
+                      ? "item(s)"
+                      : "attachment(s)"}
                     were not in the backup.
                   </>
                 ) : null}
