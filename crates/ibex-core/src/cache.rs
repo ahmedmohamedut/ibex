@@ -102,6 +102,38 @@ impl CacheDir {
         std::fs::create_dir_all(dir).at(dir)
     }
 
+    /// A path next to `dest`, unique to this call, to write a replacement
+    /// into before renaming it over `dest`.
+    ///
+    /// **A fixed name like `dest.with_extension("partial")` is not actually
+    /// safe to share between concurrent callers**, even when every caller
+    /// would write identical bytes. Two writers opening the same temp path
+    /// race on *truncation*, not just on content: a second `File::create`
+    /// truncates the first writer's still-open file before it has written or
+    /// renamed, so the first writer's rename can carry over a half-written
+    /// (or zero-length) file. This is exactly how a cold, parallel
+    /// `cargo test` run against one real backup corrupted `manifest.db` often
+    /// enough to fail most of `real_backup.rs`, despite both writers
+    /// decrypting the same bytes. Each caller writing its own uniquely-named
+    /// file removes the shared state the race needs: whichever rename lands
+    /// last simply replaces `dest` with an equally correct file.
+    pub(crate) fn unique_temp_path(dest: &Path) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let pid = std::process::id();
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let suffix = match dest.extension().and_then(|e| e.to_str()) {
+            Some(ext) => format!("{ext}.partial-{pid}-{n}-{nanos}"),
+            None => format!("partial-{pid}-{n}-{nanos}"),
+        };
+        dest.with_extension(suffix)
+    }
+
     /// Total size of the cache in bytes, for the Overview screen.
     pub fn size_on_disk(&self) -> Result<u64> {
         fn walk(dir: &Path, total: &mut u64) -> Result<()> {

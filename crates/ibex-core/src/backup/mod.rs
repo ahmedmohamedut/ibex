@@ -106,7 +106,17 @@ impl Backup {
             // stripped instead.
             let ciphertext = std::fs::read(&manifest_db).at(&manifest_db)?;
             let plaintext = crypto::decrypt_buffer(&manifest_key, &ciphertext, None)?;
-            std::fs::write(&decrypted, &plaintext).at(&decrypted)?;
+            // Write to a uniquely-named temporary file and rename, not a
+            // direct write to a shared one: opening the same backup from two
+            // threads before the cache exists — which a real app can do on
+            // its first load, and which concurrent tests against one real
+            // backup do every run — would otherwise have one thread's
+            // `File::create` truncate the file mid-write by another, letting
+            // a rename carry over a half-written manifest. A unique path per
+            // call removes the shared state that race needs.
+            let partial = CacheDir::unique_temp_path(&decrypted);
+            std::fs::write(&partial, &plaintext).at(&partial)?;
+            std::fs::rename(&partial, &decrypted).at(&decrypted)?;
 
             let manifest = Manifest::open(&decrypted)?;
             (manifest, Some(keys))
@@ -308,8 +318,20 @@ impl Backup {
     }
 
     /// Whether an entry's bytes are actually present in the backup.
+    ///
+    /// This asks about the file on disk and nothing more. It deliberately does
+    /// **not** go through [`Self::materialize`]: on an encrypted backup that
+    /// decrypts the whole file into the cache, so a presence check per item
+    /// would decrypt everything it asked about. Listing one page of the camera
+    /// roll — which checks four files per asset — decrypted 28 GB before this
+    /// was separated out.
     pub fn has_data(&self, entry: &ManifestEntry) -> bool {
-        self.materialize(entry).is_ok()
+        if entry.kind.is_dir() {
+            return false;
+        }
+        entry
+            .physical_path(&self.root)
+            .is_some_and(|path| path.is_file())
     }
 
     /// Open a SQLite database from the backup through a cached working copy.
@@ -809,6 +831,63 @@ mod tests {
             Backup::open(&file, None).unwrap_err().code(),
             "not_a_directory"
         );
+    }
+
+    /// Checking whether a file is in the backup must not decrypt it.
+    ///
+    /// `has_data` used to go through `materialize`, which writes a decrypted
+    /// copy into the cache. The camera-roll grid checks four files per asset,
+    /// so listing a real library decrypted 28 GB and took 41 seconds instead
+    /// of 2.7. This pins the cheap behaviour down.
+    #[test]
+    fn a_presence_check_decrypts_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fixture = FixtureBackup::new()
+            .encrypted_with_password("hunter2")
+            .with_file("HomeDomain", "big.bin", &vec![7u8; 64 * 1024])
+            .with_phantom_file("HomeDomain", "absent.bin", 1024)
+            .build(tmp.path())
+            .unwrap();
+        let backup = open_encrypted(&fixture, Some("hunter2")).unwrap();
+
+        // Opening decrypts Manifest.db, so measure from here.
+        let before = cache_file_count(backup.cache().root());
+
+        let present = backup.find("HomeDomain", "big.bin").unwrap().unwrap();
+        assert!(backup.has_data(&present));
+        let absent = backup.find("HomeDomain", "absent.bin").unwrap().unwrap();
+        assert!(!backup.has_data(&absent));
+
+        assert_eq!(
+            cache_file_count(backup.cache().root()),
+            before,
+            "a presence check must not write a decrypted copy"
+        );
+
+        // And materialize still does decrypt, on demand.
+        let path = backup.materialize(&present).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap().len(), 64 * 1024);
+        assert!(cache_file_count(backup.cache().root()) > before);
+    }
+
+    /// How many files sit under a directory, recursively.
+    fn cache_file_count(dir: &Path) -> usize {
+        fn walk(dir: &Path, count: &mut usize) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, count);
+                } else {
+                    *count += 1;
+                }
+            }
+        }
+        let mut count = 0;
+        walk(dir, &mut count);
+        count
     }
 
     #[test]

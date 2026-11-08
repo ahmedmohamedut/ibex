@@ -10,7 +10,9 @@
 //! serves both callers: databases listed in the manifest, and `Manifest.db`
 //! itself, which is a top-level file that no manifest lists.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rusqlite::{Connection, OpenFlags};
 
@@ -68,6 +70,21 @@ impl WorkCopy {
 
         let db = dir.join(&src.name);
         let stamp_path = dir.join(".stamp");
+
+        // Hold a lock for this one working copy's directory, for the whole
+        // check-then-copy sequence below. Two callers materializing the same
+        // database concurrently — two IPC commands racing on first open, or
+        // (how this was actually found) two parallel integration tests
+        // against the one real backup every `real_backup.rs` test shares —
+        // must not interleave their remove/copy steps. Without this, one
+        // caller's SQLite connection can open mid-replacement and find a
+        // missing or half-written database: exactly the "no Files table" and
+        // "i/o error" failures a cold, parallel test run produced before this
+        // lock existed. Other databases are not affected: the lock is keyed
+        // per directory, not global.
+        let lock = lock_for(&dir);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
         let stamp = source_stamp(src)?;
 
         // A stamp file rather than comparing the copies themselves: opening a
@@ -144,6 +161,22 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     Ok(conn)
+}
+
+/// One lock per working-copy directory, so concurrent materializations of
+/// *different* databases never wait on each other, but two callers racing on
+/// the *same* one are serialized rather than interleaved.
+///
+/// Process-local only — this is a desktop app with one process per running
+/// instance, not a guard against another program touching the cache.
+fn lock_for(dir: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+    registry
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 /// `path` with a suffix appended to its file name.
@@ -357,5 +390,51 @@ mod tests {
             })
             .collect();
         assert_eq!(before, after, "the backup folder must not be modified");
+    }
+
+    /// Many threads materializing the same working copy at once must never
+    /// see a half-replaced or missing database.
+    ///
+    /// This is the race a cold, parallel `cargo test` run against one real
+    /// backup hit in practice: every integration test in `real_backup.rs`
+    /// opens the same backup, so without the per-directory lock, concurrent
+    /// first-time materializations of `sms.db`/`ChatStorage.sqlite` raced on
+    /// removing and recopying the same files, and a reader could open a
+    /// connection in the gap.
+    #[test]
+    fn concurrent_materialize_of_the_same_key_never_corrupts_it() {
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src_db = src_dir.join("real.db");
+        {
+            let conn = Connection::open(&src_db).unwrap();
+            conn.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('a'), ('b');")
+                .unwrap();
+        }
+
+        let cache = Arc::new(CacheDir::at(tmp.path().join("cache")));
+        let src = Arc::new(SourceFiles::new(&src_db, "real.db"));
+
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let src = Arc::clone(&src);
+                std::thread::spawn(move || {
+                    let copy = WorkCopy::materialize(&cache, "shared-key", &src).unwrap();
+                    let conn = copy.open().unwrap();
+                    row_count(&conn)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            // Every racer must see the real table with its real rows — never
+            // an empty database created by SQLite opening a path mid-removal,
+            // and never an error from a half-copied file.
+            assert_eq!(handle.join().unwrap(), 2);
+        }
     }
 }

@@ -118,9 +118,16 @@ pub fn decrypt_to_file(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).at(parent)?;
     }
-    // Write to a temporary file and rename, so an interrupted decryption cannot
-    // leave a half-written file that later looks complete.
-    let temp = dest.with_extension("partial");
+    // Write to a uniquely-named temporary file and rename, so an interrupted
+    // decryption cannot leave a half-written file that later looks complete
+    // — and, just as important, so two callers decrypting the same
+    // destination concurrently (two range requests for one video, two
+    // thumbnail renders of one photo) cannot truncate each other's
+    // in-progress write out from under them. A name shared between callers
+    // is not safe even when their output would be identical: it is a shared
+    // mutable file, and `File::create` truncates on open regardless of what
+    // the previous opener was doing with it.
+    let temp = crate::cache::CacheDir::unique_temp_path(dest);
     let mut output = std::fs::File::create(&temp).at(&temp)?;
 
     let limit = expected_len.unwrap_or(u64::MAX);
@@ -288,9 +295,18 @@ mod tests {
 
         decrypt_to_file(&KEY, &source, &dest, Some(64)).unwrap();
         assert!(dest.exists());
+        // The temp name is unique per call (two concurrent decrypts to the
+        // same destination must not share one), so check the directory for
+        // any leftover rather than guessing one fixed name.
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .filter(|name| name != "c.bin" && name != "p.bin")
+            .collect();
         assert!(
-            !dest.with_extension("partial").exists(),
-            "the temporary file should have been renamed away"
+            leftovers.is_empty(),
+            "a temporary file should have been renamed away, found {leftovers:?}"
         );
     }
 
