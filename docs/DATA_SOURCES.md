@@ -201,10 +201,15 @@ Location changed over iOS versions; probe in order:
 `CloudRecordings.db` → `ZCLOUDRECORDING`: `ZPATH` (file name), `ZENCRYPTEDTITLE` (the title; the name is historical, it's plain text), `ZCUSTOMLABEL`, `ZDATE`, `ZDURATION`, `ZUNIQUEID`. Folders in `ZFOLDER`. **Not verified against real data** — the real backup's copy can't be opened at all, so this schema is sourced from community documentation and checked only against a synthetic fixture.
 
 **`.qta` is a QuickTime container** (`ftyp` says `qt  `), not an M4A/MP4 one — Voice Memos' own
-"edited recording" format, written once noise reduction or multi-take editing is applied. The
-same family `.mov` already plays through via GStreamer's `qtdemux` (the WhatsApp voice-note
-finding above), so it needs no special handling: a plain `<audio>` element plays it the same as
-`.m4a`.
+"edited recording" format, written once noise reduction or multi-take editing is applied. It
+sniffs as `video/quicktime`, **not** an `audio/*` type — unlike `.m4a`, which sniffs as audio.
+`.mov` playing through GStreamer's `qtdemux` (the WhatsApp voice-note finding above) says
+nothing about which HTML element can load it: that was a `<video>` element there, and **a plain
+`<audio>` element refused to play a `video/quicktime`-typed resource at all** — confirmed as a
+real bug (`.qta` recordings silently failed to play, affecting the newest recordings first,
+since those sort to the top of the list). The player has to pick `<video>` for anything whose
+sniffed `preview` is `video`, exactly as `PreviewPane.tsx` already does for the Raw browser; an
+audio-only stream in a `<video>` element just shows an empty frame with working controls.
 
 Export name: `<YYYY-MM-DD HHmm> <title or "Recording">.<ext>`, sanitized, extension matching the
 source file (`.m4a` or `.qta`).

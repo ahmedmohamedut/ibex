@@ -218,9 +218,14 @@ Notes:
   schema itself is therefore sourced from community documentation and a synthetic fixture only,
   not a readable real database — the reverse of M5's DCIM fallback, which stayed fixture-only
   because the real `Photos.sqlite` happened to parse fine.
-- `.qta` (29 of the 81 real recordings) is a QuickTime container, the same family `.mov` already
-  plays via GStreamer; `.composition` folders hold no audio and `-trackN.waveform` files are UI
-  data only — both are skipped, not listed as recordings.
+- `.qta` (29 of the 81 real recordings) is a QuickTime container; `.composition` folders hold no
+  audio and `-trackN.waveform` files are UI data only — both are skipped, not listed as
+  recordings. **Found after this milestone shipped:** `.qta` sniffs as `video/quicktime`, and the
+  player used a plain `<audio>` element for every recording regardless — WebKitGTK's `<audio>`
+  refuses to play a `video/*`-typed resource at all, so every `.qta` recording silently failed to
+  play, the newest recordings first since those sort to the top of the list. Fixed by picking
+  `<video>` when the sniffed preview kind is video, exactly as the Raw browser's own
+  `PreviewPane.tsx` already does.
 - **Documents needed no new browsing code at all.** `Backup::list_dir` already works for any
   domain; the only gap was naming the starting points. Found in the process:
   `docs/DATA_SOURCES.md`'s own note on where app display names live was wrong — the real source
@@ -232,10 +237,12 @@ Notes:
 - Verified on real data: 81 recordings via the fallback; 92 Files sources, matching a direct
   count against the manifest exactly; a real export of 3 recordings and 5 On-My-iPhone documents,
   byte-compared against the originals; the backup folder's mtimes unchanged afterward.
-- **Not verified by me:** that recordings actually *play*, titles included — the one real backup
-  available has no titles to show, since its database is unreadable, so the "plays with its
-  title" half of this milestone's own done-when is proven only against the fixture. A `.qta`
-  recording's playback also needs ears, the same caveat as every audio/video claim so far.
+- **Not verified by me:** that recordings actually *sound right* when played — the audio/video
+  element choice is confirmed correct structurally (an SSR check and the sniffed-type logic both
+  check out), but hearing it is still the user's to confirm, the same caveat as every audio/video
+  claim so far. Titles are unverified for a different reason: the one real backup available has
+  no titles to show at all, since its database is unreadable, so that half of this milestone's
+  own done-when is proven only against the fixture.
 
 ## M7: Encrypted backups
 > **Done out of order, ahead of M2.** The only real backup available for development is
@@ -294,9 +301,48 @@ Notes:
 - **Not verified by me:** that either package installs and launches. They were unpacked and every
   file checksummed, but `dpkg -i` needs root and starting the app needs a display.
 
+## M9: Contacts, Call History and Notes
+
+I probed all three against the real backup before writing this; counts and schema below are from
+that backup, not just the community-documented shape.
+
+- [ ] Contacts: `HomeDomain` / `Library/AddressBook/AddressBook.sqlitedb` — `ABPerson` (name,
+      organization) joined to `ABMultiValue` (`property` 3 = phone, 4 = email) by `record_id`.
+      774 people on the real backup. Reuse `extractors::contacts::ContactResolver`'s existing
+      phone/email normalization (already built for SMS/WhatsApp name resolution) rather than a
+      second implementation; this milestone is making that data *browsable and exportable* for
+      the first time, not re-deriving it. Contact photos from `AddressBookImages.sqlitedb`
+      (present on the real backup) if the join is simple enough once inspected properly.
+      vCard (`.vcf`) export, per contact and in bulk.
+- [ ] Call History: `HomeDomain` / `Library/CallHistoryDB/CallHistory.storedata` —
+      `ZCALLRECORD` (`ZDATE`, `ZDURATION`, `ZADDRESS`, `ZORIGINATED` 0/1 for in/outgoing,
+      `ZANSWERED`). **4,044 real records.** `ZSERVICE_PROVIDER` cleanly separates
+      `com.apple.Telephony` (3,975) from `com.apple.FaceTime` (69) — don't assume every row is a
+      cellular call. `ZCALLTYPE` has at least three real values (1/8/16); nail down what each
+      means (audio vs. video vs. audio-only FaceTime is the likely split) before relying on it.
+      Resolve `ZADDRESS` against Contacts the same way SMS/WhatsApp resolve a number today.
+- [ ] Notes: `AppDomainGroup-group.com.apple.notes` / `NoteStore.sqlite` — **substantially
+      harder than anything built so far.** `ZICCLOUDSYNCINGOBJECT` is one polymorphic table
+      backing notes, folders, attachments and accounts together (190+ columns on the real
+      backup); the actual text lives in `ZICNOTEDATA.ZDATA`, a **gzip-compressed, undocumented
+      Apple protobuf blob** — not a format any existing dependency in this project reads. 281
+      notes on the real backup. Needs: identifying which `ZICCLOUDSYNCINGOBJECT` rows are notes
+      vs. folders vs. attachments (via `Z_ENT`/`ZTYPE`-style discrimination, the same approach
+      M5 used for Photos' album entity lookup), gunzipping `ZDATA`, and reverse-engineering (or
+      finding and verifying) the protobuf schema well enough to pull plain text and checklist
+      state out safely — getting this wrong silently could reorder or corrupt shown text, not
+      just drop it, so validate against the real backup's rendered-by-Notes content before
+      trusting it. A pure Rust `flate2` (already a transitive possibility to check) plus a
+      hand-rolled minimal protobuf reader, or `prost`, would both need discussion with the
+      project's owner before adding (ibex-core dependency rule). Attachments (images, scanned
+      documents, drawings) are a separate, later pass — text first.
+
+**Done when:** contacts are browsable and export to vCard; call history is browsable, resolves
+contact names the way Messages does, and separates FaceTime from cellular; notes show readable
+text (attachments can wait).
+
 ## Later
-- Call history, Notes, Safari history, Calendar
-- Contacts browser with vCard export
+- Safari history, Calendar
 - Timeline view across sources
 - PDF export of conversations
 - macOS / Windows builds

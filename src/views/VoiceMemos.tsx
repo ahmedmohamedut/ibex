@@ -24,7 +24,7 @@ export function VoiceMemos() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [exporting, setExporting] = useState<ExportScope | null>(null);
   const [playing, setPlaying] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioRef = useRef<HTMLMediaElement>(null);
 
   const recordings = useVoiceRecordings(backup?.handle);
   const items = useMemo(
@@ -124,20 +124,44 @@ export function VoiceMemos() {
 
             {current.fileId ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
-                {/* A plain <audio> element, not a custom player: every
-                    recording — .m4a or the newer .qta QuickTime container —
-                    plays through it, the same as .mov already does for
-                    WhatsApp voice notes. */}
-                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                <audio
-                  ref={audioRef}
-                  key={current.id}
-                  src={fileUrl(backup.handle, current.fileId)}
-                  controls
-                  onPlay={() => setPlaying(true)}
-                  onPause={() => setPlaying(false)}
-                  onEnded={() => setPlaying(false)}
-                />
+                {/* .m4a sniffs as audio and plays through <audio>. .qta is a
+                    QuickTime container (Voice Memos' "edited recording"
+                    format) and sniffs as video/quicktime — WebKitGTK's
+                    <audio> element refuses to play a resource typed as
+                    video, even an audio-only one, which is what made
+                    playback silently fail for every recent recording (the
+                    newest ones are the ones most likely to be .qta). Render
+                    <video> instead for those, exactly as PreviewPane.tsx
+                    already does for the Raw browser's own audio/video
+                    files; an audio-only stream in a <video> element just
+                    shows an empty frame with working controls. */}
+                {current.preview === "video" ? (
+                  // eslint-disable-next-line jsx-a11y/media-has-caption
+                  <video
+                    ref={(el) => {
+                      audioRef.current = el;
+                    }}
+                    key={current.id}
+                    src={fileUrl(backup.handle, current.fileId)}
+                    controls
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    onEnded={() => setPlaying(false)}
+                  />
+                ) : (
+                  // eslint-disable-next-line jsx-a11y/media-has-caption
+                  <audio
+                    ref={(el) => {
+                      audioRef.current = el;
+                    }}
+                    key={current.id}
+                    src={fileUrl(backup.handle, current.fileId)}
+                    controls
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    onEnded={() => setPlaying(false)}
+                  />
+                )}
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
                     type="button"
