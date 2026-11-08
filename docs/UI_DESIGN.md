@@ -76,6 +76,13 @@ Table: title, date, duration, size. Row click → player in detail pane with tit
 ### Raw
 Two-level browser: domains (with file count and size) → tree of the domain's paths. File preview identical to Files. Extra info: fileID, physical path, flags, protection class, raw metadata. "Copy fileID", "Save as…", "Open containing physical folder".
 
+### Contacts
+- List pane: avatar initials, name (or organization when there's no personal name), filter box, "Export all" (vCard). Ordered by last name then first.
+- Detail pane: name, organization, nickname, every phone number and email on file, "Export vCard" for just this contact.
+
+### Call History
+Single full-width table (no detail pane — there's nothing more to show than the row already has): contact name or raw number, direction icon (outgoing/incoming/missed, missed shown in the danger color), date, duration, service (Cellular or FaceTime, with a video icon for FaceTime). Names resolve through the same address-book matching Messages/WhatsApp use.
+
 ### Search (⌘K / Ctrl+K)
 Command palette overlay. First use prompts to build the index (job with progress). Results grouped by service → conversation, with highlighted snippets; Enter opens the thread scrolled to that message (highlight it briefly).
 

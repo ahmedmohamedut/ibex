@@ -332,22 +332,31 @@ Notes:
 I probed all three against the real backup before writing this; counts and schema below are from
 that backup, not just the community-documented shape.
 
-- [ ] Contacts: `HomeDomain` / `Library/AddressBook/AddressBook.sqlitedb` — `ABPerson` (name,
+- [x] Contacts: `HomeDomain` / `Library/AddressBook/AddressBook.sqlitedb` — `ABPerson` (name,
       organization) joined to `ABMultiValue` (`property` 3 = phone, 4 = email) by `record_id`.
       774 people on the real backup. Reuse `extractors::contacts::ContactResolver`'s existing
       phone/email normalization (already built for SMS/WhatsApp name resolution) rather than a
       second implementation; this milestone is making that data *browsable and exportable* for
       the first time, not re-deriving it. Contact photos from `AddressBookImages.sqlitedb`
-      (present on the real backup) if the join is simple enough once inspected properly.
-      vCard (`.vcf`) export, per contact and in bulk.
-- [ ] Call History: `HomeDomain` / `Library/CallHistoryDB/CallHistory.storedata` —
+      (present on the real backup) if the join is simple enough once inspected properly —
+      **not attempted**: it stores image bytes as BLOBs rather than a manifest file path, unlike
+      every other media type this app serves, and there is no real backup here to confirm the
+      join is in fact simple. Deferred, not guessed at. vCard (`.vcf`) export, per contact and
+      in bulk — done.
+- [x] Call History: `HomeDomain` / `Library/CallHistoryDB/CallHistory.storedata` —
       `ZCALLRECORD` (`ZDATE`, `ZDURATION`, `ZADDRESS`, `ZORIGINATED` 0/1 for in/outgoing,
       `ZANSWERED`). **4,044 real records.** `ZSERVICE_PROVIDER` cleanly separates
       `com.apple.Telephony` (3,975) from `com.apple.FaceTime` (69) — don't assume every row is a
       cellular call. `ZCALLTYPE` has at least three real values (1/8/16); nail down what each
-      means (audio vs. video vs. audio-only FaceTime is the likely split) before relying on it.
-      Resolve `ZADDRESS` against Contacts the same way SMS/WhatsApp resolve a number today.
-- [ ] Notes: `AppDomainGroup-group.com.apple.notes` / `NoteStore.sqlite` — **substantially
+      means (audio vs. video vs. audio-only FaceTime is the likely split) before relying on it —
+      **done conservatively, not nailed down**: exposed raw (`Option<i64>`) rather than mapped to
+      an enum, since there is no real backup here to confirm the meanings against. Resolve
+      `ZADDRESS` against Contacts the same way SMS/WhatsApp resolve a number today — done, via the
+      same `ContactResolver`.
+- [ ] Notes: **deferred.** No real backup is available in this environment to validate a
+      reverse-engineered protobuf reader against, and getting it wrong could silently corrupt
+      displayed text rather than just drop it — ship Contacts and Call History now, revisit Notes
+      once real-backup access exists. `AppDomainGroup-group.com.apple.notes` / `NoteStore.sqlite` — **substantially
       harder than anything built so far.** `ZICCLOUDSYNCINGOBJECT` is one polymorphic table
       backing notes, folders, attachments and accounts together (190+ columns on the real
       backup); the actual text lives in `ZICNOTEDATA.ZDATA`, a **gzip-compressed, undocumented
@@ -365,7 +374,29 @@ that backup, not just the community-documented shape.
 
 **Done when:** contacts are browsable and export to vCard; call history is browsable, resolves
 contact names the way Messages does, and separates FaceTime from cellular; notes show readable
-text (attachments can wait).
+text (attachments can wait). **The first two are done; Notes is deferred** (see above).
+
+Notes:
+- `extractors::contacts::ContactsDb` sits alongside the existing `ContactResolver` in the same
+  file (`contacts.rs`) rather than a new module, since both read `AddressBook.sqlitedb` — one
+  page of `ABPerson` rows, then one grouped `ABMultiValue` query for all their phones/emails,
+  rather than a lookup per contact. `ContactResolver` itself is untouched.
+- `extractors::call_history::CallHistoryDb` mirrors WhatsApp's `column_exists` tolerant-schema
+  pattern (`ZANSWERED`/`ZSERVICE_PROVIDER`/`ZCALLTYPE` are probed, not assumed present) — this is
+  Core Data like `ChatStorage.sqlite`, not a plain table like `AddressBook.sqlitedb`.
+- `export/vcard.rs` adds `"contacts"` to `export::run`'s source dispatch alongside
+  Photos/Voice/Documents — one vCard 3.0 file per contact, no new export command needed.
+- Verified: 28 new Rust unit/integration tests against synthetic fixtures (contact grouping and
+  nickname fallback, FaceTime/cellular separation, an unanswered call, an unknown caller with no
+  address, an unrecognised `ZCALLTYPE` value, vCard RFC 2426 escaping, a full end-to-end IPC test
+  through Tauri's mock runtime), a manual CLI run (`ibex-cli contacts list` / `calls list` /
+  `export … contacts all`) before any of it was wired into the IPC layer, and `npm run build`
+  type-checking the two new views against the regenerated bindings.
+- **Not verified by me:** how the Contacts/Call History views actually look — this sandbox has no
+  window manager to drive the real app, the same caveat as every GUI change this session — and
+  every real-data claim this milestone's own text makes (774 contacts, 4,044 calls, the
+  `ZSERVICE_PROVIDER`/`ZCALLTYPE` values) was taken from the roadmap's own prior real-backup probe
+  rather than re-confirmed, since no real backup is available here.
 
 ## Later
 - Safari history, Calendar

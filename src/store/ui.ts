@@ -9,6 +9,8 @@ export type Section =
   | "photos"
   | "voice"
   | "documents"
+  | "contacts"
+  | "calls"
   | "raw"
   | "exports";
 

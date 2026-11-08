@@ -33,6 +33,12 @@ export type ExportScope =
       root: DocumentRoot;
       /** Paths relative to `root`, or everything under it when absent. */
       paths?: string[];
+    }
+  | {
+      kind: "contacts";
+      label: string;
+      /** An explicit multi-selection, or every contact when absent. */
+      contactIds?: string[];
     };
 
 const FORMATS: { value: ExportFormat; label: string; detail: string }[] = [
@@ -59,13 +65,14 @@ export function ExportDialog(props: {
   messageCount?: number;
   onClose: () => void;
 }) {
-  // Photos, Voice Memos and Documents each have exactly one export shape
-  // (the files themselves), so the format picker and the chat-only options
-  // below are all gated on this rather than on `props.source`.
+  // Photos, Voice Memos, Documents and Contacts each have exactly one export
+  // shape (the files themselves), so the format picker and the chat-only
+  // options below are all gated on this rather than on `props.source`.
   const isFileBased =
     props.scope.kind === "photos" ||
     props.scope.kind === "voice" ||
-    props.scope.kind === "documents";
+    props.scope.kind === "documents" ||
+    props.scope.kind === "contacts";
   const startExport = useStartExport();
   const [format, setFormat] = useState<ExportFormat>(isFileBased ? "files" : "html");
   const [includeAttachments, setIncludeAttachments] = useState(true);
@@ -77,7 +84,8 @@ export function ExportDialog(props: {
     props.scope.kind === "conversation" ||
     props.scope.kind === "photos" ||
     props.scope.kind === "voice" ||
-    props.scope.kind === "documents"
+    props.scope.kind === "documents" ||
+    props.scope.kind === "contacts"
       ? props.scope.label
       : props.source === "whatsapp"
         ? "every WhatsApp chat"
@@ -101,7 +109,9 @@ export function ExportDialog(props: {
                   ? props.scope.recordingIds
                   : props.scope.kind === "documents" && props.scope.paths
                     ? props.scope.paths
-                    : [],
+                    : props.scope.kind === "contacts" && props.scope.contactIds
+                      ? props.scope.contactIds
+                      : [],
           photoFilter:
             props.scope.kind === "photos" ? props.scope.filter : null,
           documentRoot:

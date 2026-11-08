@@ -5,6 +5,8 @@ import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { applyTheme, useUi } from "./store/ui";
+import { CallHistory } from "./views/CallHistory";
+import { Contacts } from "./views/Contacts";
 import { Exports } from "./views/Exports";
 import { Files } from "./views/Files";
 import { JobToasts } from "./components/JobToasts";
@@ -73,6 +75,10 @@ function Shell() {
             <VoiceMemos />
           ) : section === "documents" ? (
             <Files />
+          ) : section === "contacts" ? (
+            <Contacts />
+          ) : section === "calls" ? (
+            <CallHistory />
           ) : section === "exports" ? (
             <Exports />
           ) : (

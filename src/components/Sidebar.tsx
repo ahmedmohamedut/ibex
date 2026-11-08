@@ -6,7 +6,9 @@ import {
   MessageCircle,
   MessageSquare,
   Mic,
+  Phone,
   Share,
+  Users,
 } from "lucide-react";
 import { useDomains } from "../api/raw";
 import { formatCount } from "./format";
@@ -24,6 +26,8 @@ const SOURCE_ITEMS: {
   { section: "photos", sourceId: "photos", label: "Photos", Icon: Image },
   { section: "voice", sourceId: "voice", label: "Voice Memos", Icon: Mic },
   { section: "documents", sourceId: "documents", label: "Files", Icon: FileText },
+  { section: "contacts", sourceId: "contacts", label: "Contacts", Icon: Users },
+  { section: "calls", sourceId: "calls", label: "Call History", Icon: Phone },
 ];
 
 export function Sidebar() {
