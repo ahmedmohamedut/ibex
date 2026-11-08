@@ -14,6 +14,7 @@ export function TopBar() {
   const closedBackup = useUi((s) => s.closedBackup);
   const theme = useUi((s) => s.theme);
   const setTheme = useUi((s) => s.setTheme);
+  const openSearch = useUi((s) => s.openSearch);
   const closeBackup = useCloseBackup();
 
   const next = THEMES[(THEMES.findIndex((t) => t.value === theme) + 1) % THEMES.length];
@@ -49,11 +50,17 @@ export function TopBar() {
 
       <span className="topbar__spacer" />
 
-      {/* Search and Export are wired up in M8 and M4; shown disabled so the
-          shell matches docs/UI_DESIGN.md rather than changing shape later. */}
-      <button type="button" className="button" disabled title="Search arrives in milestone M8">
+      <button
+        type="button"
+        className="button"
+        onClick={openSearch}
+        disabled={!backup}
+        title="Search (Ctrl+K)"
+      >
         <Search size={14} aria-hidden="true" /> Search
       </button>
+      {/* Export already exists per conversation/selection/section; a
+          top-bar "export everything" trigger is a later polish item. */}
       <button type="button" className="button" disabled title="Export arrives in milestone M4">
         <Share size={14} aria-hidden="true" /> Export
       </button>

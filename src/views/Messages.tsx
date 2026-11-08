@@ -1,5 +1,5 @@
 import { MessageSquare, Users } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSmsConversations, useSmsMessages } from "../api/sms";
 import type { ConversationSummary } from "../bindings/ConversationSummary";
 import { ChatThread } from "../components/chat/ChatThread";
@@ -34,11 +34,21 @@ export function Messages() {
   const conversations = useSmsConversations(backup?.handle);
   const thread = useSmsMessages(backup?.handle, selected);
 
+  const pendingJump = useUi((s) => s.pendingJump);
+  const clearPendingJump = useUi((s) => s.clearPendingJump);
+  useEffect(() => {
+    if (pendingJump?.source === "sms") setSelected(pendingJump.conversationId);
+  }, [pendingJump]);
+  const highlightMessageId =
+    pendingJump?.source === "sms" && pendingJump.conversationId === selected
+      ? pendingJump.messageId
+      : null;
+
   const items = useMemo(() => {
     const all = conversations.data?.items ?? [];
     const needle = filter.trim().toLowerCase();
     if (!needle) return all;
-    // Filters the list only; searching message text is milestone M8.
+    // Filters the list only; full message text uses the Ctrl+K search palette.
     return all.filter((c) => label(c).toLowerCase().includes(needle));
   }, [conversations.data, filter]);
 
@@ -184,6 +194,8 @@ export function Messages() {
                 hasOlder={Boolean(thread.hasNextPage)}
                 isLoadingOlder={thread.isFetchingNextPage}
                 onLoadOlder={() => void thread.fetchNextPage()}
+                highlightMessageId={highlightMessageId}
+                onHighlightSettled={clearPendingJump}
               />
             )}
           </>

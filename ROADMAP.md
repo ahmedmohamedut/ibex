@@ -284,7 +284,7 @@ Notes:
   a new test that fails if file dates land outside 2007–2030.
 
 ## M8: Search and polish
-- [ ] FTS5 index job over SMS + WhatsApp; search palette (Ctrl+K) with jump-to-message
+- [x] FTS5 index job over SMS + WhatsApp; search palette (Ctrl+K) with jump-to-message
 - [ ] Keyboard shortcuts, empty states, error toasts with details
 - [ ] Per-domain sizes in Overview as a background job (deferred from M1)
 - [ ] Performance pass on a large backup (open time, scroll, thumbnail throughput); document numbers
@@ -294,6 +294,25 @@ Notes:
 **Done when:** a release build installs on a fresh Linux machine and handles a large backup comfortably.
 
 Notes:
+- **Search** (`crates/ibex-core/src/search/`): an FTS5 index at `cache/<backup-id>/search.db`,
+  built by walking the existing `SmsDb`/`WhatsAppDb` pagination rather than re-querying the
+  databases directly — the SMS `attributedBody` decode and the WhatsApp opaque-reference preview
+  filtering come along for free. Always rebuilds from scratch (a backup is a read-only
+  point-in-time snapshot, so there is nothing to detect as "stale" within a session). The
+  `search()` match expression is built token-by-token from user input rather than passed through,
+  so FTS5 query syntax can't leak in from a search box. Verified: 12 core unit tests against the
+  synthetic fixture (including that the attributedBody-only SMS message is indexed and found,
+  proving the real decode path is reused), a manual CLI run (`ibex-cli index`/`search`), and one
+  end-to-end IPC test driving `start_index` as a real job through Tauri's mock runtime, polling it
+  to completion, then confirming `index_status` and `search` over the real IPC boundary.
+  `JobInfo`/`JobFinishedEvent` grew an additive `index_report` field next to the existing
+  (now-optional) `report`, matching how `Selection` grew `photo_filter`/`document_root` rather
+  than merging the two job-report shapes.
+- **Not verified by me:** that the Ctrl+K palette actually looks and feels right, that the
+  highlight-and-scroll-to-message animation reads well, or that a message outside the loaded
+  range is found by the retry-with-paging logic on a real multi-thousand-message thread —
+  type-checking and the backend tests above are the only checks that ran; this sandbox has no
+  window manager to drive the real app, the same caveat as every GUI change this milestone.
 - `scripts/package.sh` builds both packages. 4.1 MiB each, a 9.4 MiB binary; `Depends` /
   `Requires` resolve to `libwebkit2gtk-4.1-0` and `libgtk-3-0` only, since SQLite is statically
   bundled. Both ship the GPL text (`/usr/share/doc/ibex/copyright`,

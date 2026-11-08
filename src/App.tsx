@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { SearchPalette } from "./components/SearchPalette";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
@@ -31,11 +32,28 @@ function Shell() {
   const backup = useUi((s) => s.backup);
   const section = useUi((s) => s.section);
   const theme = useUi((s) => s.theme);
+  const searchOpen = useUi((s) => s.searchOpen);
+  const openSearch = useUi((s) => s.openSearch);
 
   // Apply the stored theme on mount and whenever it changes.
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // The only global keyboard shortcut today: Ctrl+K / Cmd+K opens search,
+  // from anywhere in the app. Per-overlay keys (Escape, arrows) stay local
+  // to the component that owns them, same as the Lightbox already does.
+  useEffect(() => {
+    if (!backup) return;
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        openSearch();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [backup, openSearch]);
 
   return (
     <div className="app">
@@ -64,6 +82,7 @@ function Shell() {
       ) : (
         <Welcome />
       )}
+      {searchOpen && backup ? <SearchPalette /> : null}
       <JobToasts />
       <Toasts />
     </div>

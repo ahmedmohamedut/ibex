@@ -92,6 +92,8 @@ export function MessageBubble(props: {
   /** The message this one replies to, when it is on screen. */
   parent?: Message;
   palette?: "imessage" | "whatsapp";
+  /** Briefly flashed, e.g. when a search result lands on this message. */
+  highlighted?: boolean;
   onOpenImage: (url: string, name: string) => void;
   onJumpTo: (id: string) => void;
 }) {
@@ -128,7 +130,10 @@ export function MessageBubble(props: {
 
   return (
     <div
-      className={mine ? "bubble-row bubble-row--me" : "bubble-row bubble-row--them"}
+      className={
+        (mine ? "bubble-row bubble-row--me" : "bubble-row bubble-row--them") +
+        (props.highlighted ? " bubble-row--flash" : "")
+      }
       id={`message-${m.id}`}
     >
       {props.showSender && !mine && m.sender ? (

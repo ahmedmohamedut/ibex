@@ -25,6 +25,10 @@ function dayKey(iso: string | null): string {
  * loaded by scrolling up. Prepending content normally yanks the viewport, so
  * the scroll offset is restored from the height change after each prepend.
  */
+/** How many older pages to load while hunting for a not-yet-loaded message,
+ * before giving up rather than paging forever. */
+const MAX_JUMP_PAGES = 20;
+
 export function ChatThread(props: {
   handle: string;
   /** Newest first, as the API returns them. */
@@ -34,9 +38,18 @@ export function ChatThread(props: {
   isLoadingOlder: boolean;
   onLoadOlder: () => void;
   palette?: "imessage" | "whatsapp";
+  /** A message to scroll to and briefly highlight, e.g. from a search
+   * result — paged in with `onLoadOlder` if not already loaded. */
+  highlightMessageId?: string | null;
+  /** Called once the jump either lands or gives up, so the caller can clear
+   * its pending-jump state. */
+  onHighlightSettled?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const [jumpGaveUp, setJumpGaveUp] = useState(false);
+  const jumpAttempts = useRef(0);
 
   // Oldest first for display.
   const ordered = useMemo(() => [...props.messages].reverse(), [props.messages]);
@@ -45,6 +58,45 @@ export function ChatThread(props: {
     for (const m of ordered) map.set(m.id, m);
     return map;
   }, [ordered]);
+
+  // Reset the hunt whenever a new target arrives.
+  useEffect(() => {
+    jumpAttempts.current = 0;
+    setJumpGaveUp(false);
+  }, [props.highlightMessageId]);
+
+  // Hunt for a message that might not be in the loaded range yet: keep
+  // asking for older pages until it shows up, or until MAX_JUMP_PAGES says
+  // it isn't going to.
+  useEffect(() => {
+    const target = props.highlightMessageId;
+    if (!target) return;
+    if (byId.has(target)) return;
+    if (jumpGaveUp) return;
+    if (props.isLoadingOlder) return;
+    if (!props.hasOlder || jumpAttempts.current >= MAX_JUMP_PAGES) {
+      setJumpGaveUp(true);
+      props.onHighlightSettled?.();
+      return;
+    }
+    jumpAttempts.current += 1;
+    props.onLoadOlder();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.highlightMessageId, byId, props.hasOlder, props.isLoadingOlder, jumpGaveUp]);
+
+  // Found it: scroll to it and flash it briefly.
+  useEffect(() => {
+    const target = props.highlightMessageId;
+    if (!target || !byId.has(target)) return;
+    document.getElementById(`message-${target}`)?.scrollIntoView({ block: "center" });
+    setFlashId(target);
+    const timer = setTimeout(() => {
+      setFlashId(null);
+      props.onHighlightSettled?.();
+    }, 2000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.highlightMessageId, byId]);
 
   // Keep the viewport steady when an older page is prepended.
   const previous = useRef({ height: 0, count: 0, top: 0 });
@@ -91,6 +143,11 @@ export function ChatThread(props: {
   return (
     <>
       <div className="pane__body" ref={scrollRef}>
+        {jumpGaveUp && props.highlightMessageId && !byId.has(props.highlightMessageId) ? (
+          <div className="thread__loading thread__loading--warn">
+            Couldn't find this message — it may be outside the loaded range.
+          </div>
+        ) : null}
         {props.isLoadingOlder ? (
           <div className="thread__loading">Loading older messages…</div>
         ) : props.hasOlder ? (
@@ -121,6 +178,7 @@ export function ChatThread(props: {
                   showSender={props.isGroup}
                   parent={m.replyTo ? byId.get(m.replyTo) : undefined}
                   palette={props.palette}
+                  highlighted={m.id === flashId}
                   onOpenImage={(url, name) => setLightbox({ url, name })}
                   onJumpTo={jumpTo}
                 />

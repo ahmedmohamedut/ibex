@@ -34,6 +34,13 @@ export function applyTheme(theme: Theme): void {
   else root.setAttribute("data-theme", theme);
 }
 
+/** Where a search result wants the UI to jump to. */
+export interface PendingJump {
+  source: "sms" | "whatsapp";
+  conversationId: string;
+  messageId: string;
+}
+
 interface UiState {
   /** The open backup, or null on the Welcome screen. */
   backup: BackupSummary | null;
@@ -45,6 +52,11 @@ interface UiState {
   /** Raw browser: the selected file's id. */
   fileId: string | null;
   theme: Theme;
+  /** Whether the Ctrl+K search palette is open. */
+  searchOpen: boolean;
+  /** Set by the search palette when a result is opened; consumed (and
+   * cleared) by the Messages/WhatsApp view it targets. */
+  pendingJump: PendingJump | null;
 
   openedBackup: (backup: BackupSummary) => void;
   closedBackup: () => void;
@@ -53,6 +65,10 @@ interface UiState {
   setDir: (dir: string) => void;
   selectFile: (fileId: string | null) => void;
   setTheme: (theme: Theme) => void;
+  openSearch: () => void;
+  closeSearch: () => void;
+  jumpTo: (jump: PendingJump) => void;
+  clearPendingJump: () => void;
 }
 
 export const useUi = create<UiState>((set) => ({
@@ -62,12 +78,23 @@ export const useUi = create<UiState>((set) => ({
   dir: "",
   fileId: null,
   theme: storedTheme(),
+  searchOpen: false,
+  pendingJump: null,
 
   openedBackup: (backup) =>
     set({ backup, section: "overview", domain: null, dir: "", fileId: null }),
   closedBackup: () =>
     set({ backup: null, section: "overview", domain: null, dir: "", fileId: null }),
   setSection: (section) => set({ section }),
+  openSearch: () => set({ searchOpen: true }),
+  closeSearch: () => set({ searchOpen: false }),
+  jumpTo: (jump) =>
+    set({
+      pendingJump: jump,
+      searchOpen: false,
+      section: jump.source === "sms" ? "messages" : "whatsapp",
+    }),
+  clearPendingJump: () => set({ pendingJump: null }),
   // Changing domain resets the path and selection, or the detail pane would
   // show a file from the previous domain.
   selectDomain: (domain) => set({ domain, dir: "", fileId: null }),

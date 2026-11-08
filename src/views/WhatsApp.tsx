@@ -1,5 +1,5 @@
 import { MessageCircle, Users } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useWaChats, useWaMessages } from "../api/whatsapp";
 import type { ConversationSummary } from "../bindings/ConversationSummary";
 import { ChatThread } from "../components/chat/ChatThread";
@@ -35,6 +35,16 @@ export function WhatsApp() {
 
   const chats = useWaChats(backup?.handle, includeFeeds);
   const thread = useWaMessages(backup?.handle, selected);
+
+  const pendingJump = useUi((s) => s.pendingJump);
+  const clearPendingJump = useUi((s) => s.clearPendingJump);
+  useEffect(() => {
+    if (pendingJump?.source === "whatsapp") setSelected(pendingJump.conversationId);
+  }, [pendingJump]);
+  const highlightMessageId =
+    pendingJump?.source === "whatsapp" && pendingJump.conversationId === selected
+      ? pendingJump.messageId
+      : null;
 
   const items = useMemo(() => {
     const all = chats.data?.items ?? [];
@@ -189,6 +199,8 @@ export function WhatsApp() {
                 isLoadingOlder={thread.isFetchingNextPage}
                 onLoadOlder={() => void thread.fetchNextPage()}
                 palette="whatsapp"
+                highlightMessageId={highlightMessageId}
+                onHighlightSettled={clearPendingJump}
               />
             )}
           </>
