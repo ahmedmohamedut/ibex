@@ -50,6 +50,12 @@ enum Command {
     /// Files: On My iPhone and per-app Documents.
     #[command(subcommand)]
     Docs(DocsCommand),
+    /// The address book.
+    #[command(subcommand)]
+    Contacts(ContactsCommand),
+    /// Call history.
+    #[command(subcommand)]
+    Calls(CallsCommand),
     /// Export conversations to a folder.
     Export(ExportArgs),
     /// Build the full-text search index over SMS + WhatsApp.
@@ -149,7 +155,7 @@ impl From<CliFormat> for ibex_core::ExportFormat {
 struct ExportArgs {
     #[command(flatten)]
     backup: BackupArgs,
-    /// Which source: sms or wa.
+    /// Which source: sms, wa or contacts.
     source: String,
     /// A conversation id, or `all`.
     conversation: String,
@@ -301,6 +307,40 @@ struct DocsSourcesArgs {
     backup: BackupArgs,
 }
 
+#[derive(Subcommand)]
+enum ContactsCommand {
+    /// List every contact.
+    List(ContactsListArgs),
+}
+
+#[derive(Args)]
+struct ContactsListArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    #[arg(long, default_value_t = 200)]
+    limit: u32,
+    /// Show names, numbers and emails. Off by default: these are personal.
+    #[arg(long)]
+    show_content: bool,
+}
+
+#[derive(Subcommand)]
+enum CallsCommand {
+    /// List call history, newest first.
+    List(CallsListArgs),
+}
+
+#[derive(Args)]
+struct CallsListArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    #[arg(long, default_value_t = 50)]
+    limit: u32,
+    /// Show resolved names and numbers. Off by default: these are personal.
+    #[arg(long)]
+    show_content: bool,
+}
+
 #[derive(Args)]
 struct SmsConvsArgs {
     #[command(flatten)]
@@ -421,6 +461,8 @@ fn main() -> Result<()> {
         Command::Photos(PhotosCommand::Audit(args)) => photos_audit(args),
         Command::Voice(VoiceCommand::List(args)) => voice_list(args),
         Command::Docs(DocsCommand::Sources(args)) => docs_sources(args),
+        Command::Contacts(ContactsCommand::List(args)) => contacts_list(args),
+        Command::Calls(CallsCommand::List(args)) => calls_list(args),
         Command::Export(args) => export(args),
         Command::Index(args) => index(args),
         Command::Search(args) => search_cmd(args),
@@ -709,7 +751,8 @@ fn export(args: &ExportArgs) -> Result<()> {
     let source = match args.source.as_str() {
         "sms" => "sms",
         "wa" | "whatsapp" => "whatsapp",
-        other => bail!("unknown source {other:?}; expected sms or wa"),
+        "contacts" => "contacts",
+        other => bail!("unknown source {other:?}; expected sms, wa or contacts"),
     };
     let selection = if args.conversation == "all" {
         Selection::all(source)
@@ -1181,6 +1224,7 @@ fn fixture(args: &FixtureArgs) -> Result<()> {
         .with_sms()
         .with_whatsapp()
         .with_address_book()
+        .with_call_history()
         .build(&args.out)
         .context("building the fixture")?;
 
@@ -1194,7 +1238,9 @@ fn fixture(args: &FixtureArgs) -> Result<()> {
          ibex-cli sms convs {root}\n  \
          ibex-cli sms msgs {root} 1\n  \
          ibex-cli wa chats {root}\n  \
-         ibex-cli wa msgs {root} 1",
+         ibex-cli wa msgs {root} 1\n  \
+         ibex-cli contacts list {root}\n  \
+         ibex-cli calls list {root}",
         root = root.display()
     );
     Ok(())
@@ -1600,5 +1646,106 @@ fn docs_sources(args: &DocsSourcesArgs) -> Result<()> {
         );
     }
     println!("\n{} source(s)", sources.len());
+    Ok(())
+}
+
+fn contacts_list(args: &ContactsListArgs) -> Result<()> {
+    use ibex_core::Page;
+    use ibex_core::extractors::ContactsDb;
+
+    let backup = args.backup.open()?;
+    let db = ContactsDb::open(&backup).context("opening AddressBook.sqlitedb")?;
+    let page = db.list(Page::first(args.limit))?;
+
+    println!(
+        "{:<8} {:<7} {:<7}  {}",
+        "ID",
+        "PHONES",
+        "EMAILS",
+        if args.show_content { "NAME" } else { "" }
+    );
+    for contact in &page.items {
+        if args.show_content {
+            println!(
+                "{:<8} {:<7} {:<7}  {}",
+                contact.id,
+                contact.phones.len(),
+                contact.emails.len(),
+                contact.display_name.as_deref().unwrap_or("(unnamed)"),
+            );
+        } else {
+            println!(
+                "{:<8} {:<7} {:<7}",
+                contact.id,
+                contact.phones.len(),
+                contact.emails.len(),
+            );
+        }
+    }
+    println!(
+        "\n{} of {} contact(s)",
+        page.items.len(),
+        page.total.unwrap_or(0)
+    );
+    if !args.show_content {
+        println!("(names withheld; pass --show-content to print them)");
+    }
+    Ok(())
+}
+
+fn calls_list(args: &CallsListArgs) -> Result<()> {
+    use ibex_core::Page;
+    use ibex_core::extractors::{CallHistoryDb, CallService};
+
+    let backup = args.backup.open()?;
+    let db = CallHistoryDb::open(&backup).context("opening CallHistory.storedata")?;
+    let page = db.list(Page::first(args.limit))?;
+
+    println!(
+        "{:<20}  {:<4} {:<10} {:<8}  {}",
+        "DATE",
+        "DIR",
+        "SERVICE",
+        "ANSWERED",
+        if args.show_content { "FROM" } else { "ID" }
+    );
+    for call in &page.items {
+        let date = call
+            .date
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let service = match &call.service {
+            CallService::Telephony => "cellular".to_string(),
+            CallService::FaceTime => "facetime".to_string(),
+            CallService::Other(s) if s.is_empty() => "unknown".to_string(),
+            CallService::Other(s) => s.clone(),
+        };
+        let answered = match call.answered {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "-",
+        };
+        let tail = if args.show_content {
+            call.contact.label().to_string()
+        } else {
+            call.id.clone()
+        };
+        println!(
+            "{:<20}  {:<4} {:<10} {:<8}  {}",
+            date,
+            if call.outgoing { "out" } else { "in" },
+            service,
+            answered,
+            tail,
+        );
+    }
+    println!(
+        "\n{} of {} call(s)",
+        page.items.len(),
+        page.total.unwrap_or(0)
+    );
+    if !args.show_content {
+        println!("(names/numbers withheld; pass --show-content to print them)");
+    }
     Ok(())
 }
