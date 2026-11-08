@@ -121,8 +121,15 @@ Notes:
 - Reactions are deliberately not read: undocumented protobuf in `ZWAMESSAGEINFO`.
 - Group chats finally get real coverage here — 18 groups, 2,278 members — which M2 could not get
   since all 859 of the backup's SMS chats are one-to-one.
-- **Not verified by me:** that a voice note actually plays. The container and codecs check out,
-  but confirming it needs ears.
+- **Found after this milestone shipped:** voice notes did not play at all — `<audio>` errored
+  immediately. The container and codec check (`oggdemux`+`opusdec` present) was real but beside
+  the point: `infer` names the magic bytes `audio/opus` (the RTP payload type), and WebKitGTK's
+  media backend does not treat that as a playable container, regardless of codec support. RFC 7845
+  §9 actually registers an Ogg-encapsulated Opus file as `audio/ogg`, which plays correctly with
+  the same bytes. `util::mime::sniff` now normalizes `audio/opus` to `audio/ogg` for every caller
+  (the media protocol, the Raw browser, exports), so this cannot drift back per-callsite. Same
+  family of bug as the `.qta` one below: the codec being decodable doesn't mean the declared
+  container type is one WebKitGTK's `<audio>`/`<video>` will attempt.
 
 ## M4: Export engine
 - [x] Job system in src-tauri: start, progress events, cancel, finished report

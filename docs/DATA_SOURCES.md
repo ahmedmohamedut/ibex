@@ -182,7 +182,7 @@ Key tables:
 | 46 | poll |
 | 59 | system |
 
-Unknown values map to `MessageKind::Unknown(n)`; log the value (not the content) and keep going. Voice notes are usually `.opus`; WebKitGTK can't always play Opus in an `<audio>` tag, so M3 must check playback and transcode to a cached `.ogg`/`.wav` if needed (e.g. `symphonia` + `hound`, or an optional system `ffmpeg`).
+Unknown values map to `MessageKind::Unknown(n)`; log the value (not the content) and keep going. Voice notes are usually `.opus`; WebKitGTK can decode the codec, but `<audio>` refuses to even try unless the file is served as `audio/ogg` rather than the `audio/opus` a magic-byte sniff names it — no transcode needed, just the right `Content-Type`. See the M3 real-data note below and `util::mime::normalize_mime`.
 
 ## Voice Memos
 
@@ -405,7 +405,13 @@ since inspecting them is that view's purpose.
 plus docx/pptx/xlsx/m4a/mov/mp3. Voice notes are `Ogg data, Opus audio, mono 16 kHz` — a real
 Ogg container, so **no transcoding is needed**: WebKitGTK decodes them through GStreamer's
 `oggdemux` + `opusdec`, both present with the full plugin set. The `symphonia`/`hound`/`ffmpeg`
-option this document contemplated is not required.
+option this document contemplated is not required. **Codec support checked out but playback
+still failed** (found later, from an actual attempt to play one, not from inspecting the file):
+the magic-byte sniff (the `infer` crate) names an Ogg-Opus file's media type `audio/opus`, and
+WebKitGTK's media backend refuses that as an unrecognised container regardless of the codecs it
+has — the `<audio>` element errors out before ever asking GStreamer to decode anything. RFC 7845
+§9 registers an Ogg-encapsulated Opus stream as `audio/ogg`, and serving the identical bytes
+under that type plays correctly. `util::mime::sniff` now normalizes it for every caller.
 
 #### Two classification traps, both found by real data
 

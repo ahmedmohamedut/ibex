@@ -74,7 +74,7 @@ pub fn sniff(bytes: &[u8], file_name: &str) -> Sniffed {
 
     // 2. Magic bytes.
     if let Some(kind) = infer::get(bytes) {
-        let mime = kind.mime_type().to_string();
+        let mime = normalize_mime(kind.mime_type());
         return Sniffed {
             preview: preview_for(&mime),
             mime,
@@ -101,6 +101,23 @@ pub fn sniff(bytes: &[u8], file_name: &str) -> Sniffed {
         mime: "application/octet-stream".to_string(),
         preview: PreviewKind::Binary,
     }
+}
+
+/// Correct a magic-byte match for what the webview's `<audio>`/`<video>`
+/// element actually needs in `Content-Type`, when it differs from the type
+/// name a codec-sniffing library hands back.
+///
+/// `infer` reports a WhatsApp voice note's Ogg container as `audio/opus`
+/// (the RTP payload type, reused loosely), but WebKitGTK's media backend
+/// does not recognise that as a playable container and the element errors
+/// out instead of decoding — even though the same bytes play fine labelled
+/// `audio/ogg`, which is what RFC 7845 §9 actually registers for an
+/// Ogg-encapsulated Opus file.
+fn normalize_mime(mime: &str) -> String {
+    if mime.eq_ignore_ascii_case("audio/opus") {
+        return "audio/ogg".to_string();
+    }
+    mime.to_string()
 }
 
 /// Map a media type to the way it should be shown.
@@ -277,6 +294,16 @@ mod tests {
         assert_eq!(preview_for("image/heic"), PreviewKind::ImageUnsupported);
         assert_eq!(preview_for("image/heif"), PreviewKind::ImageUnsupported);
         assert_eq!(preview_for("image/png"), PreviewKind::Image);
+    }
+
+    #[test]
+    fn an_ogg_opus_voice_note_is_served_as_audio_ogg_not_audio_opus() {
+        // `infer`'s magic-byte match names this `audio/opus`, but WebKitGTK's
+        // `<audio>` element fails to play that — see `normalize_mime`.
+        let bytes = crate::testutil::whatsapp::ogg_opus();
+        let sniffed = sniff(&bytes, "voice.opus");
+        assert_eq!(sniffed.mime, "audio/ogg");
+        assert_eq!(sniffed.preview, PreviewKind::Audio);
     }
 
     #[test]
