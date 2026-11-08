@@ -213,9 +213,25 @@ Notes:
 - [ ] Keyboard shortcuts, empty states, error toasts with details
 - [ ] Per-domain sizes in Overview as a background job (deferred from M1)
 - [ ] Performance pass on a large backup (open time, scroll, thumbnail throughput); document numbers
-- [ ] Packaging: AppImage and .deb via `tauri build`; app icon
+- [~] Packaging: **.deb and .rpm build and verify** (`scripts/package.sh`); AppImage and a real
+      app icon still to do
 
 **Done when:** a release build installs on a fresh Linux machine and handles a large backup comfortably.
+
+Notes:
+- `scripts/package.sh` builds both packages. 4.1 MiB each, a 9.4 MiB binary; `Depends` /
+  `Requires` resolve to `libwebkit2gtk-4.1-0` and `libgtk-3-0` only, since SQLite is statically
+  bundled. Both ship the GPL text (`/usr/share/doc/ibex/copyright`,
+  `/usr/share/licenses/ibex/LICENSE`), and the two binaries differ by exactly three bytes —
+  Tauri's `DEB`/`RPM` bundle-type marker.
+- The script forces `umask 022` because the rpm bundler copies file modes from disk while the deb
+  bundler normalizes them: with a 002 umask the rpm alone shipped a group-writable
+  `/usr/bin/ibex`.
+- **Still the Tauri placeholder icon**, so the packages install with a generic app image. Vendor
+  and URL are empty in the rpm too — `publisher` only reaches the deb's `Maintainer`, and
+  `RpmConfig` has no vendor field.
+- **Not verified by me:** that either package installs and launches. They were unpacked and every
+  file checksummed, but `dpkg -i` needs root and starting the app needs a display.
 
 ## Later
 - Call history, Notes, Safari history, Calendar
