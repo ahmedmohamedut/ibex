@@ -19,6 +19,7 @@
 
 mod encryption;
 pub mod sms;
+pub mod whatsapp;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -226,6 +227,27 @@ impl FixtureBackup {
     pub fn with_sms(self) -> Self {
         self.with_db("HomeDomain", "Library/SMS/sms.db", &sms::setup_sql())
             .with_file("MediaDomain", sms::PRESENT_ATTACHMENT, &samples::png())
+    }
+
+    /// Add a realistic WhatsApp container: `ChatStorage.sqlite`,
+    /// `ContactsV2.sqlite` and the media those chats reference.
+    ///
+    /// One media path is deliberately left out of the backup, so the
+    /// "not in backup" path is exercised.
+    pub fn with_whatsapp(self) -> Self {
+        use whatsapp as wa;
+        const DOMAIN: &str = "AppDomainGroup-group.net.whatsapp.WhatsApp.shared";
+        self.with_db(DOMAIN, "ChatStorage.sqlite", &wa::chat_storage_sql())
+            .with_db(DOMAIN, "ContactsV2.sqlite", wa::contacts_sql())
+            .with_file(DOMAIN, &wa::stored_path(wa::IMAGE_PATH), &samples::png())
+            .with_file(DOMAIN, &wa::stored_path(wa::VOICE_PATH), &wa::ogg_opus())
+            .with_file(
+                DOMAIN,
+                &wa::stored_path(wa::DOCUMENT_PATH),
+                b"%PDF-1.4\n% fixture document\n",
+            )
+            .with_file(DOMAIN, &wa::stored_path(wa::PREVIEW_PATH), &samples::png())
+        // MISSING_PATH is intentionally not written.
     }
 
     /// Add an `AddressBook.sqlitedb` with a few synthetic contacts.

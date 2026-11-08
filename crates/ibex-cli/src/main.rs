@@ -38,6 +38,9 @@ enum Command {
     /// SMS and iMessage conversations.
     #[command(subcommand)]
     Sms(SmsCommand),
+    /// WhatsApp chats.
+    #[command(subcommand)]
+    Wa(WaCommand),
     /// Write a synthetic backup, for exercising the CLI without a real one.
     #[cfg(feature = "fixture")]
     Fixture(FixtureArgs),
@@ -106,6 +109,42 @@ enum SmsCommand {
     Convs(SmsConvsArgs),
     /// List messages in one conversation.
     Msgs(SmsMsgsArgs),
+}
+
+#[derive(Subcommand)]
+enum WaCommand {
+    /// List chats.
+    Chats(WaChatsArgs),
+    /// List messages in one chat.
+    Msgs(WaMsgsArgs),
+}
+
+#[derive(Args)]
+struct WaChatsArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    #[arg(long, default_value_t = 50)]
+    limit: u32,
+    /// Also list status, channel and broadcast feeds, which are hidden by
+    /// default because they are not conversations.
+    #[arg(long)]
+    all_sessions: bool,
+    /// Show names and previews. Off by default: these are personal.
+    #[arg(long)]
+    show_content: bool,
+}
+
+#[derive(Args)]
+struct WaMsgsArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    /// Chat id, as printed by `wa chats`.
+    chat: String,
+    #[arg(long, default_value_t = 20)]
+    limit: u32,
+    /// Show message text and sender names. Off by default.
+    #[arg(long)]
+    show_content: bool,
 }
 
 #[derive(Args)]
@@ -220,6 +259,8 @@ fn main() -> Result<()> {
         Command::Sql(args) => sql(args),
         Command::Sms(SmsCommand::Convs(args)) => sms_convs(args),
         Command::Sms(SmsCommand::Msgs(args)) => sms_msgs(args),
+        Command::Wa(WaCommand::Chats(args)) => wa_chats(args),
+        Command::Wa(WaCommand::Msgs(args)) => wa_msgs(args),
         #[cfg(feature = "fixture")]
         Command::Fixture(args) => fixture(args),
     }
@@ -496,6 +537,115 @@ fn sql(args: &SqlArgs) -> Result<()> {
 /// Belt and braces: the connection is opened against a working copy, this
 /// keyword check runs first, and `Statement::readonly` is checked after
 /// preparing.
+/// List WhatsApp chats.
+fn wa_chats(args: &WaChatsArgs) -> Result<()> {
+    use ibex_core::extractors::whatsapp::WhatsAppDb;
+
+    let backup = args.backup.open()?;
+    let db = WhatsAppDb::open(&backup).context("opening ChatStorage.sqlite")?;
+    let page = db.list_conversations(Page::first(args.limit), args.all_sessions)?;
+
+    println!("container: {}", db.domain());
+    println!(
+        "{:<8} {:<7} {:>8}  {:<20}  {}",
+        "ID",
+        "KIND",
+        "MSGS",
+        "LAST ACTIVITY",
+        if args.show_content { "NAME" } else { "" }
+    );
+    for conv in &page.items {
+        let kind = if conv.is_group { "group" } else { "1:1" };
+        let last = conv
+            .last_message_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        if args.show_content {
+            println!(
+                "{:<8} {:<7} {:>8}  {:<20}  {}",
+                conv.id,
+                kind,
+                conv.message_count,
+                last,
+                conv.label()
+            );
+        } else {
+            println!(
+                "{:<8} {:<7} {:>8}  {:<20}  <{} participant(s)>",
+                conv.id,
+                kind,
+                conv.message_count,
+                last,
+                conv.participants.len()
+            );
+        }
+    }
+    println!(
+        "\n{} of {} chats{}",
+        page.items.len(),
+        page.total.unwrap_or(0),
+        if args.all_sessions {
+            " (including status and channels)"
+        } else {
+            " (status and channels hidden; --all-sessions to include)"
+        }
+    );
+    if !args.show_content {
+        println!("(names and previews withheld; pass --show-content to print them)");
+    }
+    Ok(())
+}
+
+/// List messages in one WhatsApp chat.
+fn wa_msgs(args: &WaMsgsArgs) -> Result<()> {
+    use ibex_core::MessageCursor;
+    use ibex_core::extractors::whatsapp::WhatsAppDb;
+
+    let backup = args.backup.open()?;
+    let db = WhatsAppDb::open(&backup).context("opening ChatStorage.sqlite")?;
+    let page = db.list_messages(&args.chat, MessageCursor::first(args.limit))?;
+
+    println!(
+        "{:<20}  {:<4} {:<9} {:<4}  {}",
+        "SENT",
+        "DIR",
+        "KIND",
+        "ATT",
+        if args.show_content { "TEXT" } else { "ID" }
+    );
+    for message in &page.messages {
+        let sent = message
+            .sent_at
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let kind = format!("{:?}", message.kind);
+        let tail = if args.show_content {
+            message
+                .body
+                .clone()
+                .unwrap_or_else(|| "<no text>".to_string())
+        } else {
+            message.id.clone()
+        };
+        println!(
+            "{:<20}  {:<4} {:<9} {:<4}  {}",
+            sent,
+            if message.from_me { "out" } else { "in" },
+            &kind[..kind.len().min(9)],
+            message.attachments.len(),
+            tail
+        );
+    }
+    println!("\n{} message(s)", page.messages.len());
+    if page.older.is_some() {
+        println!("(older messages remain; raise --limit to see more)");
+    }
+    if !args.show_content {
+        println!("(message text withheld; pass --show-content to print it)");
+    }
+    Ok(())
+}
+
 /// List conversations. Counts and ids by default, content only on request.
 fn sms_convs(args: &SmsConvsArgs) -> Result<()> {
     use ibex_core::extractors::sms::SmsDb;
@@ -708,6 +858,7 @@ fn fixture(args: &FixtureArgs) -> Result<()> {
             98_765,
         )
         .with_sms()
+        .with_whatsapp()
         .with_address_book()
         .build(&args.out)
         .context("building the fixture")?;
@@ -720,7 +871,9 @@ fn fixture(args: &FixtureArgs) -> Result<()> {
          ibex-cli ls {root} HomeDomain Library/SMS\n  \
          ibex-cli sql {root} HomeDomain Library/SMS/sms.db\n  \
          ibex-cli sms convs {root}\n  \
-         ibex-cli sms msgs {root} 1",
+         ibex-cli sms msgs {root} 1\n  \
+         ibex-cli wa chats {root}\n  \
+         ibex-cli wa msgs {root} 1",
         root = root.display()
     );
     Ok(())

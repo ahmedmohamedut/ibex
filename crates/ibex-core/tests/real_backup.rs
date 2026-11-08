@@ -484,3 +484,115 @@ fn text_only_in_attributedbody_is_recovered_on_real_data() {
          decoding is probably not working"
     );
 }
+
+#[test]
+fn whatsapp_chat_counts_reconcile_and_the_toggle_adds_feeds() {
+    let backup = backup_or_skip!();
+    use ibex_core::extractors::Extractor;
+    use ibex_core::extractors::whatsapp::{WhatsApp, WhatsAppDb};
+
+    if !WhatsApp::detect(&backup).is_present() {
+        println!("skipping: no WhatsApp container in this backup");
+        return;
+    }
+    let db = WhatsAppDb::open(&backup).unwrap();
+    let page = ibex_core::Page::first(ibex_core::Page::MAX_LIMIT);
+
+    let conversations = db.list_conversations(page, false).unwrap();
+    let everything = db.list_conversations(page, true).unwrap();
+    println!(
+        "{} conversations, {} sessions in all",
+        conversations.total.unwrap_or(0),
+        everything.total.unwrap_or(0)
+    );
+
+    // Conversations are session types 0 and 1, hidden ones included: real data
+    // showed hidden sessions hold genuine messages.
+    let expected: i64 = db
+        .connection()
+        .query_one(
+            "SELECT count(*) FROM ZWACHATSESSION WHERE coalesce(ZSESSIONTYPE, 0) IN (0, 1)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(conversations.total, Some(expected as u64));
+    assert!(
+        everything.total >= conversations.total,
+        "the toggle must only ever add sessions"
+    );
+}
+
+#[test]
+fn whatsapp_media_resolves_and_kinds_are_inferred_from_files() {
+    let backup = backup_or_skip!();
+    use ibex_core::MessageCursor;
+    use ibex_core::extractors::whatsapp::{WhatsApp, WhatsAppDb};
+    use ibex_core::extractors::{Extractor, MessageKind};
+    use std::collections::BTreeMap;
+
+    if !WhatsApp::detect(&backup).is_present() {
+        println!("skipping: no WhatsApp container in this backup");
+        return;
+    }
+    let db = WhatsAppDb::open(&backup).unwrap();
+
+    // Sample the busiest chats, which is where the variety is.
+    let chats = db
+        .list_conversations(ibex_core::Page::first(12), false)
+        .unwrap();
+
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    let mut attachments = 0usize;
+    let mut resolved = 0usize;
+    for chat in &chats.items {
+        let page = db
+            .list_messages(&chat.id, MessageCursor::first(200))
+            .unwrap();
+        for message in &page.messages {
+            let key = match &message.kind {
+                MessageKind::Unknown(code) => format!("Unknown({code})"),
+                other => format!("{other:?}"),
+            };
+            *kinds.entry(key).or_default() += 1;
+            for a in &message.attachments {
+                attachments += 1;
+                if a.file_id.is_some() {
+                    resolved += 1;
+                }
+            }
+        }
+    }
+
+    let total: usize = kinds.values().sum();
+    println!(
+        "{total} messages sampled across {} chats",
+        chats.items.len()
+    );
+    for (kind, n) in &kinds {
+        println!("  {kind:<14} {n}");
+    }
+    println!("attachments: {resolved}/{attachments} resolved in the backup");
+
+    assert!(total > 0, "the sample should not be empty");
+    // If kind inference were broken, nearly everything would land in Unknown.
+    let unknown: usize = kinds
+        .iter()
+        .filter(|(k, _)| k.starts_with("Unknown"))
+        .map(|(_, n)| *n)
+        .sum();
+    assert!(
+        unknown * 4 < total,
+        "{unknown} of {total} messages had an unrecognised kind; inference is \
+         probably not working"
+    );
+    // Media resolution measured at 97.5% when M3 was planned; assert a floor
+    // well below it so a real regression shows up without flapping.
+    if attachments > 50 {
+        assert!(
+            resolved * 10 >= attachments * 8,
+            "only {resolved} of {attachments} attachments resolved; the \
+             Message/ prefix may have changed"
+        );
+    }
+}

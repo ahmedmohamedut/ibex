@@ -94,14 +94,33 @@ Notes:
 - Group chats remain fixture-only: the real backup has 859 one-to-one chats and no groups.
 
 ## M3: WhatsApp
-- [ ] Detect WhatsApp and WhatsApp Business containers
-- [ ] Chats, group members, names (ContactsV2 + address book fallback)
-- [ ] Messages with type mapping, media resolution (path candidates), replies, deleted markers, locations, vCards
-- [ ] Voice notes: verify `.opus` playback in WebKitGTK; transcode to cached playable format if needed
-- [ ] CLI `wa chats`, `wa msgs`
-- [ ] WhatsApp view (reuse chat components, WhatsApp bubble colors)
+- [x] Detect WhatsApp and WhatsApp Business containers
+- [x] Chats, group members, names (ContactsV2 + address book fallback)
+- [x] Messages with type mapping, media resolution (path candidates), replies, deleted markers, locations, vCards
+- [x] Voice notes: verified `.opus` is Ogg/Opus and WebKitGTK has `oggdemux`+`opusdec`, so **no transcode is needed**
+- [x] CLI `wa chats`, `wa msgs`
+- [x] WhatsApp view (reuses the M2 chat components, WhatsApp bubble colors)
 
 **Done when:** WhatsApp chats, including groups, media and voice notes, read and play in the app.
+
+Notes:
+- Planned against the **real schema** rather than the docs, and the inspection paid for itself by
+  catching two classification bugs before they shipped (both in docs/DATA_SOURCES.md):
+  `ZMESSAGETYPE` cannot decide the message kind (27,813 "text" messages carry a link-preview
+  media item), and `ZGROUPEVENTTYPE` 2 covers 35,467 messages including 27,462 with ordinary
+  text — treating it as a group-event flag made 62% of a sampled thread render as system notices.
+- Hidden sessions (123, holding 283 messages) are **listed**, not filtered: dropping them would
+  lose real conversations. Only `ZSESSIONTYPE` separates conversations (1,107) from status and
+  channel feeds (85, behind a toggle).
+- Media resolution is one deterministic `Message/` prefix: 97.5% of rows on the real backup,
+  100% of the 198 attachments in the sampled threads.
+- `util::paths::redact_jid` was added because a WhatsApp path embeds a phone number, so logging
+  one breaks hard rule 3 even though the rule permits backup paths.
+- Reactions are deliberately not read: undocumented protobuf in `ZWAMESSAGEINFO`.
+- Group chats finally get real coverage here — 18 groups, 2,278 members — which M2 could not get
+  since all 859 of the backup's SMS chats are one-to-one.
+- **Not verified by me:** that a voice note actually plays. The container and codecs check out,
+  but confirming it needs ears.
 
 ## M4: Export engine
 - [ ] Job system in src-tauri: start, progress events, cancel, finished report

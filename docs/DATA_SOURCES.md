@@ -162,7 +162,7 @@ Key tables:
 | `ZWAGROUPINFO` | group metadata |
 | `ZWAMESSAGEINFO` | receipts, reactions (blob; parse later) |
 
-`ZMESSAGETYPE` (commonly observed; verify):
+`ZMESSAGETYPE` (**do not use this to decide the message kind** — see the 2026-11-08 note; kept as a guide to what the codes mean):
 
 | Value | Kind |
 |---|---|
@@ -228,6 +228,73 @@ Note: if the backup is iOS 13+ and an app opted out of backup, its documents sim
 | Telegram, Signal | not in backups in a readable form (Signal excludes itself; Telegram stores in its own encrypted DB) |
 
 ## Learned facts log
+
+### 2026-11-08: WhatsApp, measured on the real backup (M3)
+
+`AppDomainGroup-group.net.whatsapp.WhatsApp.shared`, 34,019 manifest entries (22,359 files).
+No `WhatsAppSMB` container, so Business support is detection-only and fixture-tested.
+
+| Table | Rows |
+|---|---|
+| `ZWAMESSAGE` | 66,407 |
+| `ZWAMEDIAITEM` | 41,182 (9,285 with a local path) |
+| `ZWACHATSESSION` | 1,192 |
+| `ZWAGROUPMEMBER` | 2,278 |
+| `ZWAGROUPINFO` | 19 |
+| `ZWAADDRESSBOOKCONTACT` (ContactsV2) | 1,521 |
+
+Every column this document lists exists. Undocumented extras worth knowing:
+`ZWACHATSESSION.ZLASTMESSAGETEXT` (a conversation preview with no extra query), `ZGROUPINFO`,
+`ZREMOVED`, `ZHIDDEN`, `ZUNREADCOUNT`; `ZWAMESSAGE.ZPUSHNAME`, `ZSORT`, `ZMESSAGEINFO`;
+`ZWAMEDIAITEM.ZMEDIAURL`, `ZMETADATA`, `ZXMPPTHUMBPATH`, `ZASPECTRATIO`;
+`ZWAGROUPMEMBER.ZISADMIN`/`ZISACTIVE`; `ZWAADDRESSBOOKCONTACT.ZLID`/`ZBUSINESSNAME`. There is
+**no `ZISDELETED`** column — a deleted message is `ZMESSAGETYPE` 10.
+
+**Media paths take exactly one prefix.** `ZMEDIALOCALPATH` holds `Media/<jid>/<x>/<y>/<file>`
+with **no** `Message/` prefix. Prepending `Message/` resolved **9,050 of 9,285 (97.5%)** against
+the manifest; the raw value resolved **0%**. So this is one deterministic prefix, not the
+candidate search suggested above. The remaining 2.5% are media never downloaded or since
+cleared — absent, not an error.
+
+**Paths use the newer `@lid` addressing**, not only `@s.whatsapp.net`, and group media uses
+`<number>-<number>@g.us`. Contacts therefore have to be matched on `ZWHATSAPPID` *and* `ZLID`.
+
+**A JID is a phone number**, so any error or log line carrying a WhatsApp relative path
+discloses one — in tension with hard rule 3, which forbids numbers while permitting "paths
+within the backup". `util::paths::redact_jid` masks the identifier while keeping the structure,
+and is used wherever a path reaches a message or a log. The Raw browser still shows full paths,
+since inspecting them is that view's purpose.
+
+**Media formats present:** jpg 6,246, pdf 1,081, **opus 849**, mp4 670, webp 334 (stickers),
+plus docx/pptx/xlsx/m4a/mov/mp3. Voice notes are `Ogg data, Opus audio, mono 16 kHz` — a real
+Ogg container, so **no transcoding is needed**: WebKitGTK decodes them through GStreamer's
+`oggdemux` + `opusdec`, both present with the full plugin set. The `symphonia`/`hound`/`ffmpeg`
+option this document contemplated is not required.
+
+#### Two classification traps, both found by real data
+
+1. **`ZMESSAGETYPE` cannot decide the message kind.** The real database holds **38 distinct
+   values**, roughly 25 of them undocumented, and — decisively — **27,813 of the 50,410 type-0
+   ("text") messages carry a media item**, because a link preview is stored as a media item on an
+   ordinary text message. So ibex infers the kind from the *resolved file* (extension, then
+   sniffed content) and consults the type code only for what a file cannot reveal: 0 text,
+   4 contact, 5 location, 6 system, 10 deleted, 15 sticker. Unknown codes become
+   `MessageKind::Unknown(n)` and still render.
+2. **`ZGROUPEVENTTYPE` is not a "this is a group event" flag.** Value **2 covers 35,467
+   messages** — over half the database — of which **27,462 have ordinary text**. An early version
+   of the extractor treated any non-zero value as a system message, which classified 62% of a
+   sampled thread as grey system notices. Only `ZMESSAGETYPE` 6 marks a system message.
+
+**Hidden sessions hold real conversations.** `ZHIDDEN` is set on 123 of the 1,107 one-to-one and
+group sessions, and those 123 hold **283 messages between them, none empty**. Filtering them out
+would silently lose real conversations, so ibex lists them; only `ZSESSIONTYPE` decides what is a
+conversation (0 and 1) versus a feed (2 broadcast, 3 status/channel, and a 4 observed once).
+Default listing: **1,107**; with feeds included: **1,192**.
+
+**Reactions are not read.** They live in `ZWAMESSAGEINFO.ZRECEIPTINFO` as an undocumented
+protobuf blob (60,112 rows). Guessing at its layout risks attributing the wrong reaction to the
+wrong person, so ibex leaves `reactions` empty for WhatsApp and says so in the UI's absence
+rather than inventing them.
 
 ### 2026-11-08: first *readable* real backup (iOS 27.2, iPhone19,7)
 

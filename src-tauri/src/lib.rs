@@ -31,6 +31,8 @@ macro_rules! ibex_invoke_handler {
             $crate::commands::read_hex_preview,
             $crate::commands::sms_conversations,
             $crate::commands::sms_messages,
+            $crate::commands::wa_chats,
+            $crate::commands::wa_messages,
             $crate::commands::backup_stats,
             $crate::commands::save_file_as,
             $crate::commands::clear_cache,

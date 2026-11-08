@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ibex_core::extractors::sms::{Sms, SmsDb};
+use ibex_core::extractors::whatsapp::{WhatsApp, WhatsAppDb};
 use ibex_core::extractors::{ConversationSummary, Extractor, MessageCursor, MessagePage};
 use ibex_core::util::{mime, plist_text};
 use ibex_core::{Backup, CacheDir, DomainSummary, ManifestEntry, Page, Paged};
@@ -85,7 +86,7 @@ fn detect_sources(backup: &Backup) -> Vec<SourceAvailability> {
                 .is_some_and(|entry| entry.kind.is_dir() || backup.has_data(&entry));
             // Only SMS has a viewer so far; the rest stay greyed out with a
             // tooltip saying which milestone brings them.
-            let implemented = *id == Sms::ID;
+            let implemented = *id == Sms::ID || *id == WhatsApp::ID;
             SourceAvailability {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
@@ -375,6 +376,39 @@ pub async fn sms_messages(
     blocking(move || {
         let db = SmsDb::open(&backup)?;
         Ok(db.list_messages(&conversation_id, cursor)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn wa_chats(
+    state: State<'_, AppState>,
+    handle: String,
+    page: Option<Page>,
+    include_broadcasts: Option<bool>,
+) -> Result<Paged<ConversationSummary>, IpcError> {
+    let backup = state.get(&handle)?;
+    let page = page.unwrap_or_default();
+    let include = include_broadcasts.unwrap_or(false);
+    blocking(move || {
+        let db = WhatsAppDb::open(&backup)?;
+        Ok(db.list_conversations(page, include)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn wa_messages(
+    state: State<'_, AppState>,
+    handle: String,
+    chat_id: String,
+    cursor: Option<MessageCursor>,
+) -> Result<MessagePage, IpcError> {
+    let backup = state.get(&handle)?;
+    let cursor = cursor.unwrap_or_default();
+    blocking(move || {
+        let db = WhatsAppDb::open(&backup)?;
+        Ok(db.list_messages(&chat_id, cursor)?)
     })
     .await
 }

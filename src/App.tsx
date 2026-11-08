@@ -7,6 +7,7 @@ import { applyTheme, useUi } from "./store/ui";
 import { Messages } from "./views/Messages";
 import { Overview } from "./views/Overview";
 import { Raw } from "./views/Raw";
+import { WhatsApp } from "./views/WhatsApp";
 import { Welcome } from "./views/Welcome";
 
 const queryClient = new QueryClient({
@@ -41,6 +42,8 @@ function Shell() {
             <Raw />
           ) : section === "messages" ? (
             <Messages />
+          ) : section === "whatsapp" ? (
+            <WhatsApp />
           ) : (
             <Overview />
           )}

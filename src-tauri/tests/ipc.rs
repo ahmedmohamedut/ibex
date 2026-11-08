@@ -719,8 +719,117 @@ fn the_sidebar_learns_that_messages_is_now_implemented() {
     assert_eq!(sms["available"], true);
     assert_eq!(sms["implemented"], true, "M2 ships the Messages view");
 
-    // Everything else is still pending, so the sidebar stays greyed there.
-    for other in sources.iter().filter(|s| s["id"] != "sms") {
-        assert_eq!(other["implemented"], false, "{:?}", other["id"]);
+    // M3 ships WhatsApp too; the rest are still pending, so the sidebar stays
+    // greyed there.
+    let shipped = ["sms", "whatsapp"];
+    for source in sources {
+        let id = source["id"].as_str().unwrap();
+        assert_eq!(
+            source["implemented"],
+            shipped.contains(&id),
+            "{id} implemented flag"
+        );
     }
+}
+
+#[test]
+fn whatsapp_chats_and_messages_come_back_over_ipc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = FixtureBackup::new()
+        .with_whatsapp()
+        .with_address_book()
+        .build(tmp.path())
+        .unwrap();
+
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let backup = ibex_core::Backup::open_with_cache(
+        &root,
+        None,
+        ibex_core::CacheDir::at(tmp.path().join("cache")),
+    )
+    .unwrap();
+    let handle = app.state::<AppState>().insert(backup);
+
+    // Conversations by default; status feeds only when asked for.
+    let chats = invoke(&webview, "wa_chats", json!({ "handle": handle })).unwrap();
+    assert_eq!(chats["total"], 3, "two visible chats plus one hidden");
+    let with_feeds = invoke(
+        &webview,
+        "wa_chats",
+        json!({ "handle": handle, "includeBroadcasts": true }),
+    )
+    .unwrap();
+    assert_eq!(with_feeds["total"], 4, "the toggle adds the status feed");
+
+    // camelCase shapes, as the generated bindings declare.
+    let first = &chats["items"][0];
+    assert!(first.get("isGroup").is_some(), "got {first:?}");
+    assert_eq!(first["service"], "whatsApp");
+
+    // One thread.
+    let page = invoke(
+        &webview,
+        "wa_messages",
+        json!({ "handle": handle, "chatId": "1" }),
+    )
+    .unwrap();
+    let messages = page["messages"].as_array().unwrap();
+    let find = |id: &str| {
+        messages
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+    };
+
+    // A type-0 message with a media item is a link preview, not an image.
+    let preview = find("FIXTUREWA0002");
+    assert_eq!(preview["kind"], "text");
+    assert_eq!(preview["attachments"].as_array().unwrap().len(), 1);
+
+    // An ordinary message carrying ZGROUPEVENTTYPE 2 is not a system notice.
+    assert_eq!(find("FIXTUREWA0015")["kind"], "text");
+
+    // An Ogg/Opus attachment is a voice note, and resolves in the backup.
+    let voice = find("FIXTUREWA0004");
+    assert_eq!(voice["kind"], "voice");
+    assert!(voice["attachments"][0]["fileId"].is_string());
+
+    // Media absent from the backup reports no file id.
+    assert!(find("FIXTUREWA0010")["attachments"][0]["fileId"].is_null());
+
+    // A deleted message keeps no text.
+    let deleted = find("FIXTUREWA0006");
+    assert_eq!(deleted["unsent"], true);
+    assert!(deleted["body"].is_null());
+
+    // Paging round-trips its cursor through JSON without overlap.
+    let first_page = invoke(
+        &webview,
+        "wa_messages",
+        json!({ "handle": handle, "chatId": "1",
+                "cursor": { "beforeDate": null, "beforeRowid": null, "limit": 3 } }),
+    )
+    .unwrap();
+    assert_eq!(first_page["messages"].as_array().unwrap().len(), 3);
+    let older = &first_page["older"];
+    assert!(older.is_object(), "expected a cursor for the next page");
+    let second = invoke(
+        &webview,
+        "wa_messages",
+        json!({ "handle": handle, "chatId": "1", "cursor": older }),
+    )
+    .unwrap();
+    let ids = |v: &serde_json::Value| -> Vec<String> {
+        v["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (a, b) = (ids(&first_page), ids(&second));
+    assert!(b.iter().all(|id| !a.contains(id)), "pages must not overlap");
 }

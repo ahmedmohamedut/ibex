@@ -98,7 +98,10 @@ export function MessageBubble(props: {
   const { message: m } = props;
   const mine = m.fromMe;
 
-  if (m.kind === "system") {
+  // An unsent or deleted message stays in the conversation flow as a dashed
+  // bubble, so this check comes before the system one: WhatsApp marks deleted
+  // messages in a way that would otherwise read as a system notice.
+  if (m.kind === "system" && !m.unsent) {
     return (
       <div className="bubble-row bubble-row--system">
         <div className="bubble bubble--system">{m.body ?? "System message"}</div>
@@ -148,7 +151,11 @@ export function MessageBubble(props: {
           </button>
         ) : null}
 
-        {m.unsent ? <em>Message unsent</em> : m.body}
+        {m.unsent ? (
+          <em>{m.service === "whatsApp" ? "Message deleted" : "Message unsent"}</em>
+        ) : (
+          m.body
+        )}
 
         {m.attachments.length > 0 ? (
           <div className="attachments">

@@ -8,6 +8,7 @@
 pub mod contacts;
 pub mod message;
 pub mod sms;
+pub mod whatsapp;
 
 pub use contacts::ContactResolver;
 pub use message::{
