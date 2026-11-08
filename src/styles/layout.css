@@ -1011,8 +1011,21 @@
 }
 
 .lightbox__media {
-  max-width: 100%;
-  max-height: 100%;
+  /* A plain percentage width/height here does not reliably resolve against
+     `.lightbox__stage`'s grid row — a grid item's percentage height needs
+     the track to be "definite" in a stricter sense than "stretched to fill
+     leftover space", so without this the element falls back to its
+     intrinsic pixel size (a full-resolution photo rendered at native size,
+     clipped by the stage's `overflow: hidden`). Measured: a 4032x3024 photo
+     rendered 1200x900 in a 1200x533 stage instead of being contained within
+     it. `position: absolute; inset: 0` sizes it against `.lightbox__stage`
+     directly (a definite box, since that's a plain `position: relative`
+     element sized by the outer `.lightbox` grid, not a grid item itself),
+     which resolves cleanly; object-fit keeps the aspect ratio. */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
 
@@ -1049,11 +1062,11 @@
 }
 
 .lightbox__live {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 100%;
+  /* Same fix as `.lightbox__media`: this is itself a `.lightbox__stage`
+     grid item, so `width: 100%; height: 100%` doesn't reliably resolve
+     either — it was never actually smaller than its content. */
+  position: absolute;
+  inset: 0;
 }
 
 .lightbox__live-video {
