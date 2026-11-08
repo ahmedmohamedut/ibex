@@ -154,6 +154,25 @@ Rules:
   the join is simple enough"), and there's no real backup available to confirm it is. Deferred,
   not guessed at.
 
+## Call History
+
+- **File:** `HomeDomain` / `Library/CallHistoryDB/CallHistory.storedata` — Core Data
+  (`ZCALLRECORD`, `Z_PK`), so dates go through `util::time::from_apple`.
+- Columns: `ZADDRESS` (number/handle, nullable for an unknown caller), `ZDATE`, `ZDURATION`,
+  `ZORIGINATED` (1 = outgoing, 0 = incoming), `ZANSWERED`, `ZSERVICE_PROVIDER`, `ZCALLTYPE`.
+  `ZANSWERED`/`ZSERVICE_PROVIDER`/`ZCALLTYPE` are probed for existence first (`pragma_table_info`,
+  same pattern as `whatsapp.rs`'s `column_exists`) rather than assumed present.
+- **`ZSERVICE_PROVIDER` separates FaceTime from cellular**, matched only against the two known
+  real string values (`com.apple.Telephony`, `com.apple.FaceTime`); anything else, or a missing
+  column, becomes `CallService::Other`. Audio vs. video FaceTime is **not** distinguished — no
+  confirmed signal for that was found.
+- **`ZCALLTYPE` is deliberately not mapped to an enum.** The roadmap's own real-data probe found
+  at least three values with no confirmed meaning; this module carries it through raw
+  (`Option<i64>`) rather than guess at what each number means. Revisit once verified against a
+  real backup.
+- Contact names resolve through the same `extractors::contacts::ContactResolver` SMS/WhatsApp
+  already use — no second number-matching implementation.
+
 ## WhatsApp
 
 - **Container:** `AppDomainGroup-group.net.whatsapp.WhatsApp.shared` (WhatsApp Business: `AppDomainGroup-group.net.whatsapp.WhatsAppSMB.shared`; support both).

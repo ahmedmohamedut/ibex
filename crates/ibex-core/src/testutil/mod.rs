@@ -17,6 +17,7 @@
 //!     .unwrap();
 //! ```
 
+pub mod call_history;
 mod encryption;
 pub mod photos;
 pub mod sms;
@@ -399,6 +400,14 @@ impl FixtureBackup {
             "HomeDomain",
             "Library/AddressBook/AddressBook.sqlitedb",
             sms::address_book_sql(),
+        )
+    }
+
+    pub fn with_call_history(self) -> Self {
+        self.with_db(
+            "HomeDomain",
+            "Library/CallHistoryDB/CallHistory.storedata",
+            &call_history::call_history_sql(),
         )
     }
 

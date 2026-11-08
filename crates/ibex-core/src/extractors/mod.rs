@@ -5,6 +5,7 @@
 //! normalize onto the shared types in [`message`] so the UI and the exporters
 //! treat every chat source the same way. See `docs/ARCHITECTURE.md`.
 
+pub mod call_history;
 pub mod contacts;
 pub mod documents;
 pub mod message;
@@ -13,6 +14,7 @@ pub mod sms;
 pub mod voice;
 pub mod whatsapp;
 
+pub use call_history::{CallHistory, CallHistoryDb, CallRecord, CallService};
 pub use contacts::{Contact, ContactResolver, Contacts, ContactsDb};
 pub use documents::{DocSource, list_document_sources};
 pub use message::{
