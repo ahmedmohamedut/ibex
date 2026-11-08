@@ -362,7 +362,17 @@ pub fn address_book_sql() -> &'static str {
      INSERT INTO ABMultiValue (record_id, property, value) VALUES (1, 3, '+1 (555) 000-1001');
      INSERT INTO ABMultiValue (record_id, property, value) VALUES (1, 4, 'Ada@Example.com');
      INSERT INTO ABMultiValue (record_id, property, value) VALUES (2, 3, '+44 7700 900123');
-     INSERT INTO ABMultiValue (record_id, property, value) VALUES (3, 3, '+15550001003');"
+     INSERT INTO ABMultiValue (record_id, property, value) VALUES (3, 3, '+15550001003');
+     -- A contact with multiple numbers and an organization, for the Contacts
+     -- browse feature's grouping logic; a nickname-only contact for its
+     -- display-name fallback. Neither is referenced by existing
+     -- ContactResolver tests, which only look up rows 1-3.
+     INSERT INTO ABPerson (First, Last, Organization) VALUES ('Alan', 'Turing', 'Bletchley Park');
+     INSERT INTO ABMultiValue (record_id, property, value) VALUES (4, 3, '+1 555 000 1004');
+     INSERT INTO ABMultiValue (record_id, property, value) VALUES (4, 3, '+1 555 000 1005');
+     INSERT INTO ABMultiValue (record_id, property, value) VALUES (4, 4, 'alan@example.com');
+     INSERT INTO ABPerson (Nickname) VALUES ('Boss');
+     INSERT INTO ABMultiValue (record_id, property, value) VALUES (5, 3, '+15550001006');"
 }
 
 /// SQL for an `sms.db` built to attack an exporter.
@@ -500,6 +510,6 @@ mod tests {
         let people: i64 = conn
             .query_one("SELECT count(*) FROM ABPerson", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(people, 3);
+        assert_eq!(people, 5);
     }
 }

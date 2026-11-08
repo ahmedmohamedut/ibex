@@ -142,7 +142,17 @@ Rules:
 - **File:** `HomeDomain` / `Library/AddressBook/AddressBook.sqlitedb`
 - `ABPerson` (`ROWID`, `First`, `Last`, `Organization`, `Nickname`) and `ABMultiValue` (`record_id`, `property` 3 = phone, 4 = email, `value`).
 - Normalize phone numbers for matching: strip everything but digits and leading `+`; match on the last 9–10 digits as a fallback when country codes differ. Emails lowercased.
-- Contact images in `AddressBookImages.sqlitedb` (optional).
+- `extractors::contacts::ContactResolver` (M2) does only point lookups — a phone/email to a
+  name — for SMS/WhatsApp. `extractors::contacts::ContactsDb` (M9) is the separate "browse
+  every contact" path: one page of `ABPerson` rows, then one grouped `ABMultiValue` query for
+  all their phones/emails, rather than a lookup per contact.
+- **Contact photos not attempted.** `AddressBookImages.sqlitedb` stores image bytes as BLOBs
+  directly in the database, not a path to a file the manifest already knows about — every other
+  media type this app serves (photos, voice notes, documents) resolves to a real backup file via
+  the manifest, so showing a contact photo would need a new way of serving bytes, not the
+  existing `ibex://file`/`ibex://thumb` routes. The roadmap's own wording was conditional ("if
+  the join is simple enough"), and there's no real backup available to confirm it is. Deferred,
+  not guessed at.
 
 ## WhatsApp
 

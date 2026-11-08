@@ -25,6 +25,7 @@ pub mod json;
 pub mod naming;
 pub mod photos;
 pub mod source;
+pub mod vcard;
 pub mod voice;
 
 use std::path::{Path, PathBuf};
@@ -351,15 +352,18 @@ pub fn run(
     progress: &dyn Fn(Progress),
     cancel: &CancelToken,
 ) -> Result<ExportReport> {
-    // Photos, Voice Memos and Documents each have one export shape — original
-    // files, named and dated — rather than the four formats a chat source
-    // offers, so they are selected by source id and the requested `format`
-    // is not consulted.
+    // Photos, Voice Memos, Documents and Contacts each have one export shape
+    // — original files (or, for Contacts, one generated .vcf per contact) —
+    // rather than the four formats a chat source offers, so they are
+    // selected by source id and the requested `format` is not consulted.
     match sel.source.as_str() {
         "photos" => return photos::PhotosExporter.export(backup, sel, out, opts, progress, cancel),
         "voice" => return voice::VoiceExporter.export(backup, sel, out, opts, progress, cancel),
         "documents" => {
             return documents::DocumentsExporter.export(backup, sel, out, opts, progress, cancel);
+        }
+        "contacts" => {
+            return vcard::ContactsExporter.export(backup, sel, out, opts, progress, cancel);
         }
         _ => {}
     }

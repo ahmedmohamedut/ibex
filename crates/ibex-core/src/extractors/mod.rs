@@ -13,7 +13,7 @@ pub mod sms;
 pub mod voice;
 pub mod whatsapp;
 
-pub use contacts::ContactResolver;
+pub use contacts::{Contact, ContactResolver, Contacts, ContactsDb};
 pub use documents::{DocSource, list_document_sources};
 pub use message::{
     AttachmentRef, ConversationSummary, Message, MessageCursor, MessageKind, MessagePage,

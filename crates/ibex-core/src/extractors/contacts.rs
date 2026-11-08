@@ -14,8 +14,14 @@
 
 use std::collections::HashMap;
 
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use crate::Backup;
 use crate::error::Result;
-use crate::extractors::{Availability, Participant};
+use crate::extractors::{Availability, Extractor, Participant};
+use crate::page::{Page, Paged};
 
 /// How many trailing digits the fallback index keys on.
 const SUFFIX_LEN: usize = 9;
@@ -270,6 +276,179 @@ impl ContactResolver {
     }
 }
 
+/// One person in the address book, for browsing rather than resolving.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Contact {
+    /// `ABPerson.ROWID`.
+    pub id: String,
+    /// First + last, else nickname, else organization. `None` only when
+    /// nothing at all resolved — a row with no name worth showing.
+    pub display_name: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub nickname: Option<String>,
+    pub organization: Option<String>,
+    pub phones: Vec<String>,
+    pub emails: Vec<String>,
+}
+
+/// The Contacts extractor: browsing the address book, as opposed to
+/// [`ContactResolver`]'s point lookups for SMS/WhatsApp name resolution.
+pub struct Contacts;
+
+impl Extractor for Contacts {
+    const ID: &'static str = "contacts";
+
+    fn detect(backup: &Backup) -> Availability {
+        match backup.find("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb") {
+            Ok(Some(entry)) if backup.has_data(&entry) => {
+                Availability::Present { version_hint: None }
+            }
+            _ => Availability::Absent,
+        }
+    }
+}
+
+/// Browse every contact in the address book.
+pub struct ContactsDb<'a> {
+    #[allow(dead_code)]
+    backup: &'a Backup,
+    conn: Connection,
+}
+
+impl<'a> ContactsDb<'a> {
+    pub fn open(backup: &'a Backup) -> Result<Self> {
+        let conn = backup.open_db("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb")?;
+        Ok(Self { backup, conn })
+    }
+
+    /// Every contact, ordered by last name then first, a page at a time.
+    ///
+    /// Two queries rather than N+1: one page of `ABPerson` rows, then one
+    /// `record_id IN (...)` query for all of their `ABMultiValue` rows,
+    /// grouped into phones/emails here rather than in SQL.
+    pub fn list(&self, page: Page) -> Result<Paged<Contact>> {
+        let columns = table_columns(&self.conn, "ABPerson")?;
+        let has_col = |name: &str| columns.iter().any(|c| c == name);
+        let col = |name: &str| -> String {
+            if has_col(name) {
+                name.to_string()
+            } else {
+                "NULL".to_string()
+            }
+        };
+
+        let total: i64 = self
+            .conn
+            .query_one("SELECT count(*) FROM ABPerson", [], |row| row.get(0))?;
+
+        let sql = format!(
+            "SELECT ROWID, {first}, {last}, {nickname}, {organization}
+             FROM ABPerson
+             ORDER BY COALESCE({last}, ''), COALESCE({first}, '')
+             LIMIT ?1 OFFSET ?2",
+            first = col("First"),
+            last = col("Last"),
+            nickname = col("Nickname"),
+            organization = col("Organization"),
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut people: Vec<Contact> = stmt
+            .query_map(rusqlite::params![page.limit, page.offset as i64], |row| {
+                Ok(Contact {
+                    id: row.get::<_, i64>(0)?.to_string(),
+                    display_name: None, // filled in once names are joined below
+                    first_name: row.get(1)?,
+                    last_name: row.get(2)?,
+                    nickname: row.get(3)?,
+                    organization: row.get(4)?,
+                    phones: Vec::new(),
+                    emails: Vec::new(),
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+
+        if !people.is_empty() {
+            let ids: Vec<i64> = people
+                .iter()
+                .map(|c| c.id.parse().expect("id came from ROWID, always numeric"))
+                .collect();
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT record_id, property, value FROM ABMultiValue
+                 WHERE value IS NOT NULL AND property IN (3, 4)
+                   AND record_id IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            let mut by_id: HashMap<i64, &mut Contact> = people
+                .iter_mut()
+                .map(|c| (c.id.parse().expect("numeric id"), c))
+                .collect();
+            for row in rows {
+                let (record_id, property, value) = row?;
+                let Some(contact) = by_id.get_mut(&record_id) else {
+                    continue;
+                };
+                match property {
+                    3 => contact.phones.push(value),
+                    4 => contact.emails.push(value),
+                    _ => {}
+                }
+            }
+        }
+
+        for contact in &mut people {
+            contact.display_name = display_name_of(contact);
+        }
+
+        Ok(Paged::new(people, page, Some(total.max(0) as u64)))
+    }
+}
+
+/// First + last, else nickname, else organization — the same fallback order
+/// [`ContactResolver::open`] uses, so a business contact never shows blank.
+fn display_name_of(contact: &Contact) -> Option<String> {
+    let joined = [&contact.first_name, &contact.last_name]
+        .into_iter()
+        .flatten()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !joined.is_empty() {
+        return Some(joined);
+    }
+    for candidate in [&contact.nickname, &contact.organization] {
+        if let Some(value) = candidate
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Column names actually present on `table`, for tolerant selects (hard rule
+/// 6 — iOS versions differ).
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let sql = format!("SELECT name FROM pragma_table_info('{table}')");
+    let mut stmt = conn.prepare(&sql)?;
+    Ok(stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 /// Everything that is not a digit, removed.
 fn digits_of(value: &str) -> String {
     value.chars().filter(char::is_ascii_digit).collect()
@@ -445,5 +624,99 @@ mod tests {
         let r = ContactResolver::open(&backup).unwrap();
         assert!(matches!(r.availability(), Availability::Unsupported(_)));
         assert!(r.is_empty());
+    }
+
+    fn open_address_book_fixture(tmp: &std::path::Path) -> Backup {
+        let root = FixtureBackup::new().with_address_book().build(tmp).unwrap();
+        Backup::open_with_cache(&root, None, CacheDir::at(tmp.join("cache"))).unwrap()
+    }
+
+    #[test]
+    fn contacts_detects_as_present_when_the_address_book_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = open_address_book_fixture(tmp.path());
+        assert_eq!(
+            Contacts::detect(&backup),
+            Availability::Present { version_hint: None }
+        );
+    }
+
+    #[test]
+    fn every_contact_is_listed_ordered_by_last_then_first_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = open_address_book_fixture(tmp.path());
+        let db = ContactsDb::open(&backup).unwrap();
+        let page = db.list(Page::default()).unwrap();
+
+        assert_eq!(page.total, Some(5));
+        assert_eq!(page.items.len(), 5);
+
+        // Named contacts sort by last name; the two with no first/last name
+        // (an org-only and a nickname-only contact) sort before them, in
+        // whatever order ties fall, so only the named three are order-checked.
+        let named: Vec<&str> = page
+            .items
+            .iter()
+            .filter_map(|c| c.last_name.as_deref())
+            .collect();
+        assert_eq!(named, ["Hopper", "Lovelace", "Turing"], "got {page:?}");
+    }
+
+    #[test]
+    fn a_contact_with_several_numbers_groups_them_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = open_address_book_fixture(tmp.path());
+        let db = ContactsDb::open(&backup).unwrap();
+        let page = db.list(Page::default()).unwrap();
+
+        let turing = page
+            .items
+            .iter()
+            .find(|c| c.last_name.as_deref() == Some("Turing"))
+            .expect("the multi-number contact should be listed");
+        assert_eq!(turing.display_name.as_deref(), Some("Alan Turing"));
+        assert_eq!(turing.organization.as_deref(), Some("Bletchley Park"));
+        let mut phones = turing.phones.clone();
+        phones.sort();
+        assert_eq!(phones, ["+1 555 000 1004", "+1 555 000 1005"]);
+        assert_eq!(turing.emails, ["alan@example.com"]);
+    }
+
+    #[test]
+    fn a_nickname_only_contact_falls_back_for_its_display_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = open_address_book_fixture(tmp.path());
+        let db = ContactsDb::open(&backup).unwrap();
+        let page = db.list(Page::default()).unwrap();
+
+        let boss = page
+            .items
+            .iter()
+            .find(|c| c.nickname.as_deref() == Some("Boss"))
+            .expect("the nickname-only contact should be listed");
+        assert_eq!(boss.display_name.as_deref(), Some("Boss"));
+        assert_eq!(boss.first_name, None);
+        assert_eq!(boss.phones, ["+15550001006"]);
+    }
+
+    #[test]
+    fn paging_covers_every_contact_exactly_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = open_address_book_fixture(tmp.path());
+        let db = ContactsDb::open(&backup).unwrap();
+
+        let first = db.list(Page::new(0, 3)).unwrap();
+        let second = db.list(Page::new(3, 3)).unwrap();
+        assert_eq!(first.items.len(), 3);
+        assert_eq!(second.items.len(), 2);
+        let mut ids: Vec<&str> = first
+            .items
+            .iter()
+            .chain(&second.items)
+            .map(|c| c.id.as_str())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 5, "pages must not overlap or skip");
     }
 }
