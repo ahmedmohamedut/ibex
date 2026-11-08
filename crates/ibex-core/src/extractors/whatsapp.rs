@@ -276,7 +276,7 @@ impl<'a> WhatsAppDb<'a> {
                 last_message_at: last_date.and_then(from_apple),
                 last_message_preview: last_text
                     .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-                    .filter(|t| !t.is_empty())
+                    .filter(|t| !t.is_empty() && !looks_like_opaque_reference(t))
                     .map(|t| truncate(&t, 80)),
                 service: Service::WhatsApp,
             });
@@ -711,6 +711,26 @@ fn truncate(text: &str, max_chars: usize) -> String {
     }
     let kept: String = text.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{}…", kept.trim_end())
+}
+
+/// True for a single token that looks like an internal reference (a GUID, a
+/// base64 blob, ...) rather than something a person typed.
+/// `ZWACHATSESSION.ZLASTMESSAGETEXT` holds exactly this for some
+/// reaction/media-only rows instead of real text — see docs/DATA_SOURCES.md.
+/// Used only for the chat-list preview; `ZLASTMESSAGETEXT` is read directly
+/// there rather than resolved from the real last message, so this is a
+/// best-effort filter, not a classification of the message itself.
+fn looks_like_opaque_reference(s: &str) -> bool {
+    if s.contains(char::is_whitespace) || s.chars().count() < 16 {
+        return false;
+    }
+    let charset_ok = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "+/=_-".contains(c));
+    charset_ok
+        && s.chars().any(|c| c.is_ascii_uppercase())
+        && s.chars().any(|c| c.is_ascii_lowercase())
+        && s.chars().any(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -1163,5 +1183,16 @@ mod tests {
         let out = truncate("ααααααααααα", 5);
         assert_eq!(out.chars().count(), 5);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn opaque_reference_tokens_are_told_apart_from_real_text() {
+        // Base64-shaped, like the internal ids ZLASTMESSAGETEXT sometimes
+        // holds for reaction/media-only rows: one word, mixed case, a digit.
+        assert!(looks_like_opaque_reference("aZ9kQmR7vDxL3nPqW2hJ8yTc"));
+        assert!(!looks_like_opaque_reference("Reacted to a photo"));
+        assert!(!looks_like_opaque_reference("short"));
+        assert!(!looks_like_opaque_reference("ALLCAPSBUTNODIGITSHERE"));
+        assert!(!looks_like_opaque_reference(""));
     }
 }

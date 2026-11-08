@@ -79,7 +79,7 @@ export function Photos() {
   };
 
   return (
-    <div className="panes">
+    <div className="panes panes--single">
       {exporting ? (
         <ExportDialog
           handle={backup.handle}

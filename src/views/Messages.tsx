@@ -109,13 +109,13 @@ export function Messages() {
                   {initials(label(conv))}
                 </span>
                 <span className="conv-row__main">
-                  <span className="conv-row__name">
+                  <span className="conv-row__name" dir="auto">
                     {conv.isGroup ? (
                       <Users size={11} aria-hidden="true" style={{ marginRight: 4 }} />
                     ) : null}
                     {label(conv)}
                   </span>
-                  <span className="conv-row__preview">
+                  <span className="conv-row__preview" dir="auto">
                     {conv.lastMessagePreview ?? "No messages"}
                   </span>
                 </span>

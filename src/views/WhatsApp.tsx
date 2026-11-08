@@ -119,13 +119,13 @@ export function WhatsApp() {
                   {initials(label(chat))}
                 </span>
                 <span className="conv-row__main">
-                  <span className="conv-row__name">
+                  <span className="conv-row__name" dir="auto">
                     {chat.isGroup ? (
                       <Users size={11} aria-hidden="true" style={{ marginRight: 4 }} />
                     ) : null}
                     {label(chat)}
                   </span>
-                  <span className="conv-row__preview">
+                  <span className="conv-row__preview" dir="auto">
                     {chat.lastMessagePreview ?? "No messages"}
                   </span>
                 </span>
