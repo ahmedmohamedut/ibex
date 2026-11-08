@@ -20,11 +20,14 @@ chrono = { version = "0.4.45", default-features = false, features = ["std", "clo
 csv = "1.4.0"
 filetime = "0.2.29"
 hex = "0.4.3"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 # GPL-3.0-or-later. Chosen in M2 for its attributedBody (typedstream) decoding
 # and iOS-version schema probing; this is what makes ibex GPL. See
 # docs/DATA_SOURCES.md for the decision and its reasoning.
 imessage-database = "5.0.1"
 infer = { version = "0.22.0", default-features = false }
+kamadak-exif = "0.6.2"
+libheif-rs = { version = "3.0.0", default-features = false, features = ["v1_17"] }
 mime_guess = { version = "2.0.5", default-features = false }
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 plist = "1.10.3"

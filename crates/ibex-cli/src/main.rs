@@ -41,6 +41,9 @@ enum Command {
     /// WhatsApp chats.
     #[command(subcommand)]
     Wa(WaCommand),
+    /// The camera roll.
+    #[command(subcommand)]
+    Photos(PhotosCommand),
     /// Export conversations to a folder.
     Export(ExportArgs),
     /// Write a synthetic backup, for exercising the CLI without a real one.
@@ -189,6 +192,54 @@ struct WaMsgsArgs {
     show_content: bool,
 }
 
+#[derive(Subcommand)]
+enum PhotosCommand {
+    /// List assets, newest first.
+    List(PhotosListArgs),
+    /// Per-month counts, as the grid's headers use.
+    Timeline(PhotosFilterArgs),
+    /// Titled albums with their asset counts.
+    Albums(PhotosFilterArgs),
+    /// Resolve every asset against the backup and report the totals.
+    ///
+    /// This is the check that matters: an asset row with no file behind it is
+    /// a blank tile in the grid.
+    Audit(PhotosFilterArgs),
+}
+
+#[derive(Args)]
+struct PhotosFilterArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    /// Only `photo` or only `video`.
+    #[arg(long)]
+    kind: Option<String>,
+    #[arg(long)]
+    favorites: bool,
+    #[arg(long)]
+    screenshots: bool,
+    /// The Recently Deleted album.
+    #[arg(long)]
+    trashed: bool,
+    /// The Hidden album.
+    #[arg(long)]
+    hidden: bool,
+    /// Restrict to one album, by the id `photos albums` prints.
+    #[arg(long)]
+    album: Option<String>,
+}
+
+#[derive(Args)]
+struct PhotosListArgs {
+    #[command(flatten)]
+    filter: PhotosFilterArgs,
+    #[arg(long, default_value_t = 20)]
+    limit: u32,
+    /// Show file names. Off by default: a file name can be personal.
+    #[arg(long)]
+    show_content: bool,
+}
+
 #[derive(Args)]
 struct SmsConvsArgs {
     #[command(flatten)]
@@ -303,6 +354,10 @@ fn main() -> Result<()> {
         Command::Sms(SmsCommand::Msgs(args)) => sms_msgs(args),
         Command::Wa(WaCommand::Chats(args)) => wa_chats(args),
         Command::Wa(WaCommand::Msgs(args)) => wa_msgs(args),
+        Command::Photos(PhotosCommand::List(args)) => photos_list(args),
+        Command::Photos(PhotosCommand::Timeline(args)) => photos_timeline(args),
+        Command::Photos(PhotosCommand::Albums(args)) => photos_albums(args),
+        Command::Photos(PhotosCommand::Audit(args)) => photos_audit(args),
         Command::Export(args) => export(args),
         #[cfg(feature = "fixture")]
         Command::Fixture(args) => fixture(args),
@@ -1075,4 +1130,246 @@ mod tests {
         let honest = conn.prepare("SELECT * FROM t").unwrap();
         assert!(honest.readonly());
     }
+}
+
+/// Translate the CLI's filter flags into the extractor's filter.
+fn photo_filter(args: &PhotosFilterArgs) -> Result<ibex_core::extractors::PhotoFilter> {
+    use ibex_core::extractors::{PhotoFilter, PhotoKind};
+
+    let kind = match args.kind.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        None => None,
+        Some("photo") | Some("photos") | Some("image") => Some(PhotoKind::Photo),
+        Some("video") | Some("videos") => Some(PhotoKind::Video),
+        Some(other) => anyhow::bail!("--kind must be `photo` or `video`, not {other:?}"),
+    };
+    Ok(PhotoFilter {
+        kind,
+        favorites_only: args.favorites,
+        screenshots_only: args.screenshots,
+        trashed_only: args.trashed,
+        hidden_only: args.hidden,
+        album_id: args.album.clone(),
+    })
+}
+
+fn open_photos(
+    args: &PhotosFilterArgs,
+) -> Result<(ibex_core::Backup, ibex_core::extractors::PhotoFilter)> {
+    let backup = args.backup.open()?;
+    let filter = photo_filter(args)?;
+    Ok((backup, filter))
+}
+
+fn photos_list(args: &PhotosListArgs) -> Result<()> {
+    use ibex_core::extractors::{PhotoCursor, PhotoKind, PhotosDb};
+
+    let (backup, filter) = open_photos(&args.filter)?;
+    let db = PhotosDb::open(&backup).context("opening Photos.sqlite")?;
+    let total = db.count(&filter)?;
+    let page = db.list(&filter, PhotoCursor::first(args.limit))?;
+
+    println!("asset table: {}", db.asset_table());
+    println!(
+        "{:<8} {:<5} {:<17} {:<9} {:<6} {:>10}  {}",
+        "ID",
+        "KIND",
+        "TAKEN",
+        "PIXELS",
+        "FLAGS",
+        "BYTES",
+        if args.show_content { "FILE" } else { "FILES" }
+    );
+    for asset in &page.assets {
+        let taken = asset
+            .created_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let kind = match asset.kind {
+            PhotoKind::Photo => "img",
+            PhotoKind::Video => "vid",
+        };
+        // One letter per flag, so a glance shows the shape of the library.
+        let flags: String = [
+            (asset.live, 'L'),
+            (asset.edited, 'E'),
+            (asset.favorite, 'F'),
+            (asset.screenshot, 'S'),
+            (asset.trashed, 'T'),
+            (asset.hidden, 'H'),
+        ]
+        .iter()
+        .map(|(set, ch)| if *set { *ch } else { '.' })
+        .collect();
+        let tail = if args.show_content {
+            asset.file_name.clone()
+        } else {
+            // Which files resolved, without naming them.
+            format!(
+                "{}{}{}{}",
+                if asset.file_id.is_some() {
+                    "original "
+                } else {
+                    ""
+                },
+                if asset.thumb_file_id.is_some() {
+                    "thumb "
+                } else {
+                    ""
+                },
+                if asset.live_file_id.is_some() {
+                    "live "
+                } else {
+                    ""
+                },
+                if asset.edited_file_id.is_some() {
+                    "render"
+                } else {
+                    ""
+                },
+            )
+        };
+        println!(
+            "{:<8} {:<5} {:<17} {:<9} {:<6} {:>10}  {}",
+            asset.id,
+            kind,
+            taken,
+            format!("{}x{}", asset.width, asset.height),
+            flags,
+            asset.size.unwrap_or(0),
+            tail.trim_end(),
+        );
+    }
+    println!("\n{} of {total} assets", page.assets.len());
+    println!("flags: L live  E edited  F favourite  S screenshot  T trashed  H hidden");
+    if !args.show_content {
+        println!("(file names withheld; pass --show-content to print them)");
+    }
+    Ok(())
+}
+
+fn photos_timeline(args: &PhotosFilterArgs) -> Result<()> {
+    use ibex_core::extractors::PhotosDb;
+
+    let (backup, filter) = open_photos(args)?;
+    let db = PhotosDb::open(&backup).context("opening Photos.sqlite")?;
+    let months = db.timeline(&filter)?;
+
+    let widest = months.iter().map(|m| m.count).max().unwrap_or(1).max(1);
+    for month in &months {
+        // A bar, so the shape of the library is visible at a glance.
+        let width = (month.count * 40 / widest).max(1) as usize;
+        println!(
+            "{:04}-{:02}  {:>6}  {}",
+            month.year,
+            month.month,
+            month.count,
+            "#".repeat(width)
+        );
+    }
+    let total: u64 = months.iter().map(|m| m.count).sum();
+    println!("\n{} months, {total} assets", months.len());
+    let counted = db.count(&filter)?;
+    if total != counted {
+        println!("note: {} assets have no capture date", counted - total);
+    }
+    Ok(())
+}
+
+fn photos_albums(args: &PhotosFilterArgs) -> Result<()> {
+    use ibex_core::extractors::PhotosDb;
+
+    let (backup, _) = open_photos(args)?;
+    let db = PhotosDb::open(&backup).context("opening Photos.sqlite")?;
+    let albums = db.albums()?;
+
+    println!("join table: {}", db.album_join_table().unwrap_or("<none>"));
+    println!("{:<8} {:>8}  TITLE", "ID", "ASSETS");
+    for album in &albums {
+        println!("{:<8} {:>8}  {}", album.id, album.count, album.title);
+    }
+    println!("\n{} titled album(s)", albums.len());
+    Ok(())
+}
+
+fn photos_audit(args: &PhotosFilterArgs) -> Result<()> {
+    use ibex_core::extractors::{PhotoAvailability, PhotoCursor, PhotosDb};
+
+    let (backup, filter) = open_photos(args)?;
+    let db = PhotosDb::open(&backup).context("opening Photos.sqlite")?;
+
+    let mut totals = AuditTotals::default();
+    let mut cursor = Some(PhotoCursor::first(PhotoCursor::MAX_LIMIT));
+    while let Some(c) = cursor {
+        let page = db.list(&filter, c)?;
+        for asset in &page.assets {
+            totals.assets += 1;
+            if asset.file_id.is_some() {
+                totals.originals += 1;
+            }
+            if asset.thumb_file_id.is_some() {
+                totals.thumbs += 1;
+            }
+            if asset.live {
+                totals.live += 1;
+                if asset.live_file_id.is_some() {
+                    totals.live_resolved += 1;
+                }
+            }
+            if asset.edited {
+                totals.edited += 1;
+                if asset.edited_file_id.is_some() {
+                    totals.edited_resolved += 1;
+                }
+            }
+            match asset.availability {
+                PhotoAvailability::InBackup => {}
+                PhotoAvailability::CloudOnly => totals.cloud_only += 1,
+                PhotoAvailability::Missing => totals.missing += 1,
+            }
+        }
+        cursor = page.older;
+    }
+
+    let percent = |n: u64| {
+        if totals.assets == 0 {
+            0.0
+        } else {
+            n as f64 * 100.0 / totals.assets as f64
+        }
+    };
+    println!("assets                {:>8}", totals.assets);
+    println!(
+        "originals resolved    {:>8}  {:.1}%",
+        totals.originals,
+        percent(totals.originals)
+    );
+    println!(
+        "derivatives resolved  {:>8}  {:.1}%",
+        totals.thumbs,
+        percent(totals.thumbs)
+    );
+    println!(
+        "live photos           {:>8}  companions resolved {}",
+        totals.live, totals.live_resolved
+    );
+    println!(
+        "edited                {:>8}  renders resolved    {}",
+        totals.edited, totals.edited_resolved
+    );
+    println!("cloud-only            {:>8}", totals.cloud_only);
+    println!("missing               {:>8}", totals.missing);
+    Ok(())
+}
+
+#[derive(Default)]
+struct AuditTotals {
+    assets: u64,
+    originals: u64,
+    thumbs: u64,
+    live: u64,
+    live_resolved: u64,
+    edited: u64,
+    edited_resolved: u64,
+    cloud_only: u64,
+    missing: u64,
 }

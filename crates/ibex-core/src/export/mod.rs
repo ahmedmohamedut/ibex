@@ -22,6 +22,7 @@ pub mod files;
 pub mod html;
 pub mod json;
 pub mod naming;
+pub mod photos;
 pub mod source;
 
 use std::path::{Path, PathBuf};
@@ -67,10 +68,18 @@ impl ExportFormat {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Selection {
-    /// Source id: `sms` or `whatsapp`.
+    /// Source id: `sms`, `whatsapp` or `photos`.
     pub source: String,
-    /// Conversation ids, or empty for every conversation in the source.
+    /// For a chat source: conversation ids, or empty for every conversation.
+    /// For `photos`: explicit asset ids, or empty to use `photo_filter`.
     pub conversation_ids: Vec<String>,
+    /// `photos` only. Which assets `conversation_ids` being empty means:
+    /// defaults to the same view the grid shows (trashed and hidden
+    /// excluded). Ignored, and absent from every existing caller, for a chat
+    /// source — `#[serde(default)]` keeps this an additive, backward
+    /// compatible change to a struct the IPC layer already shares.
+    #[serde(default)]
+    pub photo_filter: Option<crate::extractors::PhotoFilter>,
 }
 
 impl Selection {
@@ -79,6 +88,7 @@ impl Selection {
         Self {
             source: source.to_string(),
             conversation_ids: vec![id.to_string()],
+            photo_filter: None,
         }
     }
 
@@ -87,6 +97,7 @@ impl Selection {
         Self {
             source: source.to_string(),
             conversation_ids: Vec::new(),
+            photo_filter: None,
         }
     }
 
@@ -319,6 +330,12 @@ pub fn run(
     progress: &dyn Fn(Progress),
     cancel: &CancelToken,
 ) -> Result<ExportReport> {
+    // Photos has one export shape — original files, named and dated — rather
+    // than the four formats a chat source offers, so it is selected by
+    // source id and the requested `format` is not consulted.
+    if sel.source == "photos" {
+        return photos::PhotosExporter.export(backup, sel, out, opts, progress, cancel);
+    }
     match format {
         ExportFormat::Html => html::HtmlExporter.export(backup, sel, out, opts, progress, cancel),
         ExportFormat::Csv => csv::CsvExporter.export(backup, sel, out, opts, progress, cancel),

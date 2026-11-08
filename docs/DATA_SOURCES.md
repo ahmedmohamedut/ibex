@@ -198,14 +198,14 @@ Export name: `<YYYY-MM-DD HHmm> <title>.m4a`, sanitized.
 
 ## Photos
 
-- **Files:** `CameraRollDomain` / `Media/DCIM/1xxAPPLE/IMG_xxxx.{HEIC,JPG,PNG,MOV,MP4}`; edited versions in `Media/PhotoData/Mutations/...`.
+- **Files:** `CameraRollDomain` / `Media/DCIM/1xxAPPLE/IMG_xxxx.{HEIC,JPG,PNG,MOV,MP4}`; edited versions in `Media/PhotoData/Mutations/<dir>/<stem>/Adjustments/FullSizeRender.<ext>` (the extension does **not** necessarily match the original's — a JPG original's edit was seen rendered as `.jpg`, but nothing guarantees that in general, which is why the extractor tries several candidate extensions rather than assuming one).
 - **Library DB:** `CameraRollDomain` / `Media/PhotoData/Photos.sqlite`.
 - Main asset table is `ZASSET` (iOS 14+; `ZGENERICASSET` on older). Columns: `Z_PK`, `ZDIRECTORY`, `ZFILENAME`, `ZDATECREATED`, `ZMODIFICATIONDATE`, `ZKIND` (0 photo, 1 video), `ZWIDTH`, `ZHEIGHT`, `ZDURATION`, `ZLATITUDE`, `ZLONGITUDE` (-180.0 = none), `ZFAVORITE`, `ZHIDDEN`, `ZTRASHEDSTATE`, `ZUUID`.
-- `ZADDITIONALASSETATTRIBUTES.ZORIGINALFILENAME` holds the original import name.
-- Albums: `ZGENERICALBUM` + a join table whose name varies (`Z_26ASSETS`, `Z_27ASSETS`, …). Find it by scanning `sqlite_master` for `Z_%ASSETS`.
-- **iCloud "Optimize Storage":** many assets in `ZASSET` have no file in the backup. Mark them `availability: CloudOnly` and show a placeholder. Small derivatives may exist in `Media/PhotoData/Thumbnails/`.
-- Live Photos: a `.HEIC` + `.MOV` pair with the same base name.
-- Fallback when `Photos.sqlite` is missing or unparseable: list DCIM files directly, read EXIF dates (`kamadak-exif`).
+- `ZADDITIONALASSETATTRIBUTES.ZORIGINALFILENAME` holds the original import name; `ZORIGINALFILESIZE` the original byte count.
+- **Albums: find the join table from Core Data's own entity map, not by scanning for `Z_%ASSETS`.** The real library had **eleven** tables matching that pattern (memories, suggestions, key-asset tables), not one. `SELECT Z_ENT FROM Z_PRIMARYKEY WHERE Z_NAME = 'Album'` gives the entity number (34 on the real library); the table is `Z_<n>ASSETS` with columns `Z_<n>ALBUMS` and `Z_<assetEntity>ASSETS`. **That table also has a `Z_FOK_<n>ASSETS` ordering column** sitting right next to the real foreign key — joining on it instead silently returns the wrong rows (see the M5 learned-facts entry below). Fallback for a schema with no `Z_PRIMARYKEY`: the one `Z_%ASSETS` table that also has a `Z_%ALBUMS` column.
+- **iCloud "Optimize Storage":** an asset with no file in the backup. `ZCLOUDLOCALSTATE <> 0` or `ZCOMPLETE = 0` marks it; show a placeholder. The real library had **none** — every one of its 7,865 rows was `ZCOMPLETE = 1`, so this path is fixture-tested only, not confirmed against real data.
+- Live Photos: a still with a `.MOV` sharing its base name. **Not** a row of its own — `ZASSET` has one entry per still, and the companion is found by swapping the extension. `ZKINDSUBTYPE = 2` / `ZPLAYBACKSTYLE = 3` mark the still as Live; `ZAVALANCHEUUID` does **not** — that is burst-shot grouping, set on only 52 of 7,865 real rows.
+- Fallback when `Photos.sqlite` is missing or unparseable: list DCIM files directly, read EXIF dates (`kamadak-exif`). Not exercised by the real backup, whose library parses fine — fixture-tested only.
 
 ## Documents
 
@@ -226,6 +226,58 @@ Note: if the backup is iOS 13+ and an app opted out of backup, its documents sim
 | Safari history | `HomeDomain` / `Library/Safari/History.db` |
 | Calendar | `HomeDomain` / `Library/Calendar/Calendar.sqlitedb` |
 | Telegram, Signal | not in backups in a readable form (Signal excludes itself; Telegram stores in its own encrypted DB) |
+
+## Learned facts log
+
+### 2026-11-09: Photos, measured on the real backup (M5)
+
+`CameraRollDomain`, a 440 MiB `Photos.sqlite`. 7,865 assets in `ZASSET` (7,634
+photos, 231 videos); `Z_PRIMARYKEY.Z_MAX` for `Asset` is 27,303, so roughly
+19,000 have been deleted over the library's life. Resolution against the
+manifest is **100%**: every asset's `Media/<ZDIRECTORY>/<ZFILENAME>` is a real
+file, and so is Apple's pre-rendered derivative for every one of them (see
+below) — this backup has no cloud-only assets at all.
+
+| | |
+|---|---|
+| Types | HEIC 4,211 · JPG 2,584 · PNG 803 · MOV 95 · MP4 136 · JPEG 31 · WebP 5 |
+| Live Photos | 2,181 (of the default view's 7,162; the 2,302 counted against the full 7,865 includes trashed/hidden ones) |
+| Edited | 1,074 (default view); every one found its `FullSizeRender` but 9 |
+| Albums | 80 rows in `ZGENERICALBUM`, only **7 titled with members** (one has 412) |
+| Location | **none** — `ZLATITUDE`/`ZLONGITUDE` are Apple's `-180.0` "unset" sentinel for all 7,865 rows |
+| Cloud-only | **none** |
+
+**`ZUNIFORMTYPEIDENTIFIER` cannot be trusted**, the same shape of bug as
+WhatsApp's `ZMESSAGETYPE`: it claims `public.jpeg` for **578 assets** whose
+file name and bytes are PNG, almost all of them screenshots. The media type
+has to come from the file name and the sniffed bytes, never this column.
+
+**The sniffed MIME for a real HEIC is `image/heif`, not `image/heic`.** Every
+sampled HEIC file reported itself as the broader HEIF container via `infer`,
+not the narrower HEIC brand `docs/DATA_SOURCES.md`'s type table (above)
+assumed. Code that branches on this has to accept both — `thumbs::is_heif`
+does; an early draft of a real-data test that checked for the exact string
+`"image/heic"` did not, and found none to convert until this was caught.
+
+**`ZHIDDEN` is not where "hidden" lives.** It was `0` for every one of the
+7,865 real rows. `ZVISIBILITYSTATE` is the column that actually carries it
+(47 rows non-zero on the real library) — matching the exact shape of the
+`ZMESSAGECOUNTER` and `ZUNIFORMTYPEIDENTIFIER` findings: a stored column can
+exist, look plausible, and simply not be where the real state lives.
+
+**Album membership needs the entity map, and then needs care even with it.**
+`sqlite_master` has **eleven** tables matching `Z_%ASSETS` on the real
+library (memories, suggestions, key-asset tables besides the real album
+join), so "the one `Z_%ASSETS` table" is not a safe assumption; resolving
+`Album`'s `Z_ENT` from `Z_PRIMARYKEY` names the real one, `Z_34ASSETS`. That
+table itself then has **three** columns, not two: `Z_34ALBUMS`, `Z_3ASSETS`
+*and* `Z_FOK_3ASSETS` — Core Data's own sort-order column for the
+relationship. Joining on `Z_FOK_3ASSETS` instead of `Z_3ASSETS` compiles,
+returns plausible-looking numbers, and is wrong: it under-reported 3 albums
+with members where the real count, confirmed by a direct join on the real
+foreign key, is 7 holding 651 assets. The fix excludes any column containing
+`FOK` explicitly rather than picking "the other `*ASSETS` column" by
+position.
 
 ## Learned facts log
 

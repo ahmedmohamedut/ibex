@@ -44,12 +44,18 @@
       "deb": {
         "files": {
           "/usr/share/doc/ibex/copyright": "../LICENSE"
-        }
+        },
+        "depends": [
+          "libheif1"
+        ]
       },
       "rpm": {
         "files": {
           "/usr/share/licenses/ibex/LICENSE": "../LICENSE"
-        }
+        },
+        "depends": [
+          "libheif"
+        ]
       }
     }
   }

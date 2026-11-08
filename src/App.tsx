@@ -8,6 +8,7 @@ import { Exports } from "./views/Exports";
 import { JobToasts } from "./components/JobToasts";
 import { Messages } from "./views/Messages";
 import { Overview } from "./views/Overview";
+import { Photos } from "./views/Photos";
 import { Raw } from "./views/Raw";
 import { WhatsApp } from "./views/WhatsApp";
 import { Welcome } from "./views/Welcome";
@@ -46,6 +47,8 @@ function Shell() {
             <Messages />
           ) : section === "whatsapp" ? (
             <WhatsApp />
+          ) : section === "photos" ? (
+            <Photos />
           ) : section === "exports" ? (
             <Exports />
           ) : (

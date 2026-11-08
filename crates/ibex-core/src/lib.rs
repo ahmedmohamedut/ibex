@@ -27,6 +27,7 @@ pub mod error;
 pub mod export;
 pub mod extractors;
 pub mod page;
+pub mod thumbs;
 pub mod util;
 pub mod workcopy;
 
@@ -45,3 +46,4 @@ pub use extractors::{
     Service,
 };
 pub use page::{Page, Paged};
+pub use thumbs::Render;

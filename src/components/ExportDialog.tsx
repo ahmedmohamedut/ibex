@@ -3,13 +3,22 @@ import { FolderOpen, Share } from "lucide-react";
 import { useState } from "react";
 import { useStartExport } from "../api/jobs";
 import type { ExportFormat } from "../bindings/ExportFormat";
+import type { PhotoFilter } from "../bindings/PhotoFilter";
 import { formatCount } from "./format";
 import { toastError } from "./Toasts";
 
-/** Which conversations to export. */
+/** Which conversations — or, for photos, which assets — to export. */
 export type ExportScope =
   | { kind: "conversation"; id: string; label: string }
-  | { kind: "section" };
+  | { kind: "section" }
+  | {
+      kind: "photos";
+      /** The grid's current filter: what "everything" means here. */
+      filter: PhotoFilter;
+      label: string;
+      /** An explicit multi-selection, overriding the filter when present. */
+      assetIds?: string[];
+    };
 
 const FORMATS: { value: ExportFormat; label: string; detail: string }[] = [
   {
@@ -35,19 +44,21 @@ export function ExportDialog(props: {
   messageCount?: number;
   onClose: () => void;
 }) {
+  const isPhotos = props.source === "photos";
   const startExport = useStartExport();
-  const [format, setFormat] = useState<ExportFormat>("html");
+  const [format, setFormat] = useState<ExportFormat>(isPhotos ? "files" : "html");
   const [includeAttachments, setIncludeAttachments] = useState(true);
   const [includeBroadcasts, setIncludeBroadcasts] = useState(false);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
   const scopeLabel =
-    props.scope.kind === "conversation"
+    props.scope.kind === "conversation" || props.scope.kind === "photos"
       ? props.scope.label
       : props.source === "whatsapp"
         ? "every WhatsApp chat"
         : "every conversation";
+  const itemWord = isPhotos ? "item" : "message";
 
   const submit = async () => {
     try {
@@ -58,7 +69,13 @@ export function ExportDialog(props: {
         selection: {
           source: props.source,
           conversationIds:
-            props.scope.kind === "conversation" ? [props.scope.id] : [],
+            props.scope.kind === "conversation"
+              ? [props.scope.id]
+              : props.scope.kind === "photos" && props.scope.assetIds
+                ? props.scope.assetIds
+                : [],
+          photoFilter:
+            props.scope.kind === "photos" ? props.scope.filter : null,
         },
         format,
         outDir: dest,
@@ -93,50 +110,54 @@ export function ExportDialog(props: {
         <p style={{ marginTop: 0, color: "var(--text-muted)" }}>
           Exporting {scopeLabel}
           {props.messageCount !== undefined
-            ? ` · ${formatCount(props.messageCount)} messages`
+            ? ` · ${formatCount(props.messageCount)} ${itemWord}${props.messageCount === 1 ? "" : "s"}`
             : ""}
           .
         </p>
 
-        <fieldset style={{ border: 0, padding: 0, margin: "0 0 12px" }}>
-          <legend className="card__title" style={{ padding: 0 }}>
-            Format
-          </legend>
-          {FORMATS.map((option) => (
-            <label
-              key={option.value}
-              style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "4px 0" }}
-            >
-              <input
-                type="radio"
-                name="format"
-                checked={format === option.value}
-                onChange={() => setFormat(option.value)}
-              />
-              <span>
-                <strong>{option.label}</strong>
-                <br />
-                <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                  {option.detail}
+        {isPhotos ? null : (
+          <fieldset style={{ border: 0, padding: 0, margin: "0 0 12px" }}>
+            <legend className="card__title" style={{ padding: 0 }}>
+              Format
+            </legend>
+            {FORMATS.map((option) => (
+              <label
+                key={option.value}
+                style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "4px 0" }}
+              >
+                <input
+                  type="radio"
+                  name="format"
+                  checked={format === option.value}
+                  onChange={() => setFormat(option.value)}
+                />
+                <span>
+                  <strong>{option.label}</strong>
+                  <br />
+                  <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                    {option.detail}
+                  </span>
                 </span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
+              </label>
+            ))}
+          </fieldset>
+        )}
 
         <fieldset style={{ border: 0, padding: 0, margin: "0 0 12px" }}>
           <legend className="card__title" style={{ padding: 0 }}>
             Options
           </legend>
-          <label style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0" }}>
-            <input
-              type="checkbox"
-              checked={includeAttachments}
-              onChange={(e) => setIncludeAttachments(e.target.checked)}
-              disabled={format === "files"}
-            />
-            Copy attachment files
-          </label>
+          {isPhotos ? null : (
+            <label style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0" }}>
+              <input
+                type="checkbox"
+                checked={includeAttachments}
+                onChange={(e) => setIncludeAttachments(e.target.checked)}
+                disabled={format === "files"}
+              />
+              Copy attachment files
+            </label>
+          )}
           {props.source === "whatsapp" && props.scope.kind === "section" ? (
             <label style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0" }}>
               <input

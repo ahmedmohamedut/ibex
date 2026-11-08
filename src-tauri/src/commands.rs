@@ -8,9 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ibex_core::export::{self, ExportFormat, ExportOptions, Selection};
+use ibex_core::extractors::photos::{Photos, PhotosDb};
 use ibex_core::extractors::sms::{Sms, SmsDb};
 use ibex_core::extractors::whatsapp::{WhatsApp, WhatsAppDb};
-use ibex_core::extractors::{ConversationSummary, Extractor, MessageCursor, MessagePage};
+use ibex_core::extractors::{
+    ConversationSummary, Extractor, MessageCursor, MessagePage, PhotoAsset, PhotoCursor,
+    PhotoFilter, PhotoPage,
+};
 use ibex_core::util::{mime, plist_text};
 use ibex_core::{Backup, CacheDir, DomainSummary, ManifestEntry, Page, Paged};
 use tauri::State;
@@ -88,7 +92,7 @@ fn detect_sources(backup: &Backup) -> Vec<SourceAvailability> {
                 .is_some_and(|entry| entry.kind.is_dir() || backup.has_data(&entry));
             // Only SMS has a viewer so far; the rest stay greyed out with a
             // tooltip saying which milestone brings them.
-            let implemented = *id == Sms::ID || *id == WhatsApp::ID;
+            let implemented = *id == Sms::ID || *id == WhatsApp::ID || *id == Photos::ID;
             SourceAvailability {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
@@ -411,6 +415,65 @@ pub async fn wa_messages(
     blocking(move || {
         let db = WhatsAppDb::open(&backup)?;
         Ok(db.list_messages(&chat_id, cursor)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn photos_list(
+    state: State<'_, AppState>,
+    handle: String,
+    filter: Option<PhotoFilter>,
+    cursor: Option<PhotoCursor>,
+) -> Result<PhotoPage, IpcError> {
+    let backup = state.get(&handle)?;
+    let filter = filter.unwrap_or_default();
+    let cursor = cursor.unwrap_or_default();
+    blocking(move || {
+        let db = PhotosDb::open(&backup)?;
+        Ok(db.list(&filter, cursor)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn photos_timeline(
+    state: State<'_, AppState>,
+    handle: String,
+    filter: Option<PhotoFilter>,
+) -> Result<Vec<ibex_core::extractors::MonthCount>, IpcError> {
+    let backup = state.get(&handle)?;
+    let filter = filter.unwrap_or_default();
+    blocking(move || {
+        let db = PhotosDb::open(&backup)?;
+        Ok(db.timeline(&filter)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn photos_albums(
+    state: State<'_, AppState>,
+    handle: String,
+) -> Result<Vec<ibex_core::extractors::AlbumSummary>, IpcError> {
+    let backup = state.get(&handle)?;
+    blocking(move || {
+        let db = PhotosDb::open(&backup)?;
+        Ok(db.albums()?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn photo_detail(
+    state: State<'_, AppState>,
+    handle: String,
+    id: String,
+) -> Result<PhotoAsset, IpcError> {
+    let backup = state.get(&handle)?;
+    blocking(move || {
+        let db = PhotosDb::open(&backup)?;
+        db.asset(&id)?.ok_or_else(IpcError::unknown_file)
     })
     .await
 }

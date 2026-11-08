@@ -2,13 +2,16 @@
 //!
 //! ```text
 //! ibex://localhost/file/<handle>/<fileId>
+//! ibex://localhost/thumb/<handle>/<fileId>?s=<maxEdge>
 //! ```
 //!
 //! Media must never travel through `invoke`: a video would be base64-encoded
 //! into a JSON message. It also has to support HTTP Range, or `<audio>` and
 //! `<video>` cannot seek.
 //!
-//! `thumb/` is reserved for M5's thumbnail service and answers 404 until then.
+//! `thumb/` answers with a displayable version of a file — a web-safe image
+//! passed through untouched, a HEIC/HEIF re-encoded to JPEG at `maxEdge` —
+//! via [`ibex_core::thumbs::render`]. `s` defaults to full size when absent.
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -124,12 +127,8 @@ fn parse_range(value: Option<&str>, total: u64) -> RangeRequest {
 /// `/file/<handle>/<fileId>` split out of the URI path.
 #[derive(Debug, PartialEq, Eq)]
 enum Route<'a> {
-    File {
-        handle: &'a str,
-        file_id: &'a str,
-    },
-    /// Reserved for M5.
-    Thumb,
+    File { handle: &'a str, file_id: &'a str },
+    Thumb { handle: &'a str, file_id: &'a str },
     Unknown,
 }
 
@@ -141,9 +140,26 @@ fn route(path: &str) -> Route<'_> {
         {
             Route::File { handle, file_id }
         }
-        (Some("thumb"), _, _) => Route::Thumb,
+        (Some("thumb"), Some(handle), Some(file_id))
+            if !handle.is_empty() && !file_id.is_empty() =>
+        {
+            Route::Thumb { handle, file_id }
+        }
         _ => Route::Unknown,
     }
+}
+
+/// The `s` query parameter: the requested long edge, or `0` for full size.
+///
+/// Parsed by hand rather than pulling in a query-string crate for one
+/// optional integer; an absent or malformed value just means full size.
+fn max_edge_param(request: &Request<Vec<u8>>) -> u32 {
+    request
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("s=")))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
 }
 
 /// A short error response. The body is plain text for easier debugging in the
@@ -165,14 +181,19 @@ pub fn respond(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>
         return fail(StatusCode::METHOD_NOT_ALLOWED, "only GET is supported");
     }
 
-    let (handle, file_id) = match route(request.uri().path()) {
-        Route::File { handle, file_id } => (handle, file_id),
-        Route::Thumb => {
-            return fail(StatusCode::NOT_FOUND, "thumbnails arrive in milestone M5");
-        }
-        Route::Unknown => return fail(StatusCode::NOT_FOUND, "unknown ibex:// route"),
-    };
+    match route(request.uri().path()) {
+        Route::File { handle, file_id } => respond_file(state, handle, file_id, request),
+        Route::Thumb { handle, file_id } => respond_thumb(state, handle, file_id, request),
+        Route::Unknown => fail(StatusCode::NOT_FOUND, "unknown ibex:// route"),
+    }
+}
 
+fn respond_file(
+    state: &AppState,
+    handle: &str,
+    file_id: &str,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     let Ok(backup) = state.get(handle) else {
         return fail(StatusCode::NOT_FOUND, "that backup is not open");
     };
@@ -192,10 +213,6 @@ pub fn respond(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>
         Ok(path) => path,
         Err(_) => return fail(StatusCode::NOT_FOUND, "that file is not in the backup"),
     };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return fail(StatusCode::NOT_FOUND, "that file is not in the backup");
-    };
-    let total = metadata.len();
 
     // Sniff from a prefix so the Content-Type is right even though the file on
     // disk has a hashed, extensionless name.
@@ -203,6 +220,56 @@ pub fn respond(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>
         .sniff(&entry)
         .map(|s| s.mime)
         .unwrap_or_else(|_| "application/octet-stream".to_string());
+
+    serve_path(&path, content_type, request)
+}
+
+/// `thumb/<handle>/<fileId>?s=<maxEdge>`: a version of the file the webview
+/// can actually display. See [`ibex_core::thumbs::render`] for what that
+/// means for each file type.
+fn respond_thumb(
+    state: &AppState,
+    handle: &str,
+    file_id: &str,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let Ok(backup) = state.get(handle) else {
+        return fail(StatusCode::NOT_FOUND, "that backup is not open");
+    };
+    let entry = match backup.get(file_id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => return fail(StatusCode::NOT_FOUND, "no such file in this backup"),
+        Err(_) => {
+            return fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not read the manifest",
+            );
+        }
+    };
+
+    let max_edge = max_edge_param(request);
+    let render = match ibex_core::thumbs::render(&backup, &entry, max_edge) {
+        Ok(render) => render,
+        // Absent data and an undecodable file are both "no thumbnail" to the
+        // caller; neither message carries file content.
+        Err(_) => return fail(StatusCode::NOT_FOUND, "could not render a thumbnail"),
+    };
+
+    serve_path(&render.path, render.mime, request)
+}
+
+/// Serve a file already resolved to a real path, with Range support. Shared
+/// by the `file` and `thumb` routes so the status/header matrix is tested
+/// once rather than twice.
+fn serve_path(
+    path: &std::path::Path,
+    content_type: String,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return fail(StatusCode::NOT_FOUND, "that file is not in the backup");
+    };
+    let total = metadata.len();
 
     let header_value = request
         .headers()
@@ -217,7 +284,7 @@ pub fn respond(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>
             .body(Vec::new())
             .unwrap_or_else(|_| Response::new(Vec::new())),
 
-        RangeRequest::Single(range) => match read_at(&path, range.start, range.len()) {
+        RangeRequest::Single(range) => match read_at(path, range.start, range.len()) {
             Ok(body) => Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(header::CONTENT_TYPE, content_type)
@@ -238,7 +305,7 @@ pub fn respond(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>
                 // Serve the first chunk as a 206 so the player ranges for the
                 // rest instead of us holding the whole file in memory.
                 let end = MAX_FULL_BODY - 1;
-                return match read_at(&path, 0, MAX_FULL_BODY) {
+                return match read_at(path, 0, MAX_FULL_BODY) {
                     Ok(body) => Response::builder()
                         .status(StatusCode::PARTIAL_CONTENT)
                         .header(header::CONTENT_TYPE, content_type)
@@ -250,7 +317,7 @@ pub fn respond(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>
                     Err(_) => fail(StatusCode::INTERNAL_SERVER_ERROR, "could not read the file"),
                 };
             }
-            match std::fs::read(&path) {
+            match std::fs::read(path) {
                 Ok(body) => Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, content_type)
@@ -298,16 +365,25 @@ mod tests {
         handle: String,
         wav_id: String,
         text_id: String,
+        png_id: String,
+        /// `None` on a system whose libheif has no AV1 encoder plugin; every
+        /// test using it must handle that rather than failing outright.
+        avif_id: Option<String>,
         phantom_id: String,
     }
 
     fn fixture() -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
-        let root = FixtureBackup::new()
-            .with_sample_media()
-            .with_phantom_file("HomeDomain", "Library/gone.bin", 999)
-            .build(tmp.path())
-            .unwrap();
+        let mut builder = FixtureBackup::new().with_sample_media().with_phantom_file(
+            "HomeDomain",
+            "Library/gone.bin",
+            999,
+        );
+        let has_avif = ibex_core::testutil::photos::avif(64, 48).is_some();
+        if let Some(bytes) = ibex_core::testutil::photos::avif(64, 48) {
+            builder = builder.with_file("HomeDomain", "Library/IbexSamples/photo.heic", &bytes);
+        }
+        let root = builder.build(tmp.path()).unwrap();
         let backup =
             Backup::open_with_cache(&root, None, CacheDir::at(tmp.path().join("cache"))).unwrap();
 
@@ -320,6 +396,8 @@ mod tests {
         };
         let wav_id = id("Library/IbexSamples/tone.wav");
         let text_id = id("Library/IbexSamples/notes.txt");
+        let png_id = id("Library/IbexSamples/pixel.png");
+        let avif_id = has_avif.then(|| id("Library/IbexSamples/photo.heic"));
         let phantom_id = id("Library/gone.bin");
 
         let state = AppState::new();
@@ -330,6 +408,8 @@ mod tests {
             handle,
             wav_id,
             text_id,
+            png_id,
+            avif_id,
             phantom_id,
         }
     }
@@ -404,11 +484,33 @@ mod tests {
                 file_id: "def"
             }
         );
-        assert_eq!(route("/thumb/abc/def"), Route::Thumb);
+        assert_eq!(
+            route("/thumb/abc/def"),
+            Route::Thumb {
+                handle: "abc",
+                file_id: "def"
+            }
+        );
         assert_eq!(route("/file/abc"), Route::Unknown);
         assert_eq!(route("/file//def"), Route::Unknown);
+        assert_eq!(route("/thumb/abc"), Route::Unknown);
         assert_eq!(route("/"), Route::Unknown);
         assert_eq!(route("/nonsense/a/b"), Route::Unknown);
+    }
+
+    #[test]
+    fn the_max_edge_query_parameter_is_parsed_leniently() {
+        assert_eq!(max_edge_param(&get("ibex://localhost/thumb/a/b")), 0);
+        assert_eq!(
+            max_edge_param(&get("ibex://localhost/thumb/a/b?s=512")),
+            512
+        );
+        assert_eq!(
+            max_edge_param(&get("ibex://localhost/thumb/a/b?x=1&s=256")),
+            256
+        );
+        // Malformed values just mean full size, not an error.
+        assert_eq!(max_edge_param(&get("ibex://localhost/thumb/a/b?s=abc")), 0);
     }
 
     #[test]
@@ -531,7 +633,10 @@ mod tests {
         for uri in [
             format!("ibex://localhost/file/nosuchhandle/{}", f.text_id),
             format!("ibex://localhost/file/{}/0000000000", f.handle),
-            format!("ibex://localhost/thumb/{}/{}?s=256", f.handle, f.text_id),
+            // Separately covered: a thumb request for a *known* file that is
+            // not an image still answers 200, passed through unchanged —
+            // `a_thumbnail_for_an_unknown_backup_or_file_is_404` covers the
+            // actually-404 thumb cases.
             "ibex://localhost/".to_string(),
             format!("ibex://localhost/file/{}", f.handle),
         ] {
@@ -562,6 +667,90 @@ mod tests {
         let req = Request::builder()
             .method(tauri::http::Method::POST)
             .uri(format!("ibex://localhost/file/{}/{}", f.handle, f.text_id))
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(
+            respond(&f.state, &req).status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+
+    #[test]
+    fn a_web_safe_thumbnail_passes_through_untouched() {
+        let f = fixture();
+        let res = respond(
+            &f.state,
+            &get(&format!("ibex://localhost/thumb/{}/{}", f.handle, f.png_id)),
+        );
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn a_heif_thumbnail_is_served_as_jpeg() {
+        let f = fixture();
+        let Some(avif_id) = &f.avif_id else {
+            println!("skipping: this system's libheif has no AV1 encoder plugin");
+            return;
+        };
+        let res = respond(
+            &f.state,
+            &get(&format!(
+                "ibex://localhost/thumb/{}/{}?s=32",
+                f.handle, avif_id
+            )),
+        );
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(&res.body()[..2], &[0xFF, 0xD8], "the body is not a JPEG");
+    }
+
+    #[test]
+    fn a_thumbnail_for_absent_data_is_404() {
+        let f = fixture();
+        let res = respond(
+            &f.state,
+            &get(&format!(
+                "ibex://localhost/thumb/{}/{}",
+                f.handle, f.phantom_id
+            )),
+        );
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_thumbnail_for_an_unknown_backup_or_file_is_404() {
+        let f = fixture();
+        assert_eq!(
+            respond(
+                &f.state,
+                &get(&format!("ibex://localhost/thumb/not-a-handle/{}", f.png_id))
+            )
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            respond(
+                &f.state,
+                &get(&format!("ibex://localhost/thumb/{}/not-a-file", f.handle))
+            )
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn non_get_is_refused_on_the_thumb_route_too() {
+        let f = fixture();
+        let req = Request::builder()
+            .method(tauri::http::Method::POST)
+            .uri(format!("ibex://localhost/thumb/{}/{}", f.handle, f.png_id))
             .body(Vec::new())
             .unwrap();
         assert_eq!(

@@ -18,6 +18,7 @@
 //! ```
 
 mod encryption;
+pub mod photos;
 pub mod sms;
 pub mod whatsapp;
 
@@ -248,6 +249,54 @@ impl FixtureBackup {
             )
             .with_file(DOMAIN, &wa::stored_path(wa::PREVIEW_PATH), &samples::png())
         // MISSING_PATH is intentionally not written.
+    }
+
+    /// Add a realistic camera roll: `Photos.sqlite`, the asset files, Apple's
+    /// pre-rendered derivatives, a Live Photo companion and a rendered edit.
+    ///
+    /// One asset is deliberately cloud-only, with no file in the backup, and
+    /// one has no derivative, so both degraded paths are exercised.
+    pub fn with_photos(self) -> Self {
+        use photos as px;
+        const DOMAIN: &str = "CameraRollDomain";
+
+        let mut builder = self.with_db(DOMAIN, "Media/PhotoData/Photos.sqlite", &px::photos_sql());
+
+        // The originals. The screenshot is a PNG although the library records
+        // it as JPEG, which is the real trap this fixture exists for.
+        let originals: &[(&str, Vec<u8>)] = &[
+            (px::STILL_FILE, samples::png()),
+            (px::ALBUM_FILE, px::jpeg(64, 48)),
+            (px::VIDEO_FILE, px::mp4()),
+            (px::LIVE_FILE, samples::png()),
+            (px::EDITED_FILE, px::jpeg(48, 64)),
+            (px::SCREENSHOT_FILE, samples::png()),
+            (px::HIDDEN_FILE, px::jpeg(32, 32)),
+            (px::TRASHED_FILE, px::jpeg(32, 32)),
+            (px::FAVORITE_FILE, px::jpeg(32, 32)),
+            // CLOUD_ONLY_FILE is intentionally absent.
+        ];
+        for (name, bytes) in originals {
+            builder = builder.with_file(DOMAIN, &px::media_path(name), bytes);
+            // Apple's derivative, one per asset, except for the Live Photo so
+            // the "no derivative" fallback has a case.
+            if *name != px::LIVE_FILE {
+                builder = builder.with_file(DOMAIN, &px::thumb_path(name), &px::jpeg(36, 48));
+            }
+        }
+
+        builder
+            // The Live Photo's companion video, a sibling file rather than an
+            // asset row of its own.
+            .with_file(DOMAIN, &px::media_path(px::LIVE_COMPANION), &px::mov())
+            // The rendered edit. Note the `.jpg` extension even though the
+            // original is a JPG: real data showed the render's extension does
+            // not follow the original's.
+            .with_file(
+                DOMAIN,
+                &px::render_path(px::EDITED_FILE, "jpg"),
+                &px::jpeg(48, 64),
+            )
     }
 
     /// Add an `sms.db` whose names and message bodies are injection attempts.

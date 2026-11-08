@@ -20,3 +20,17 @@ function origin(): string {
 export function fileUrl(handle: string, fileId: string): string {
   return `${origin()}/file/${encodeURIComponent(handle)}/${encodeURIComponent(fileId)}`;
 }
+
+/**
+ * A displayable version of a file: a web-safe image passed through
+ * unchanged, or a HEIC/HEIF re-encoded to JPEG. `maxEdge` caps the long edge;
+ * omit it for full size (the lightbox).
+ */
+export function thumbUrl(
+  handle: string,
+  fileId: string,
+  maxEdge?: number,
+): string {
+  const base = `${origin()}/thumb/${encodeURIComponent(handle)}/${encodeURIComponent(fileId)}`;
+  return maxEdge ? `${base}?s=${maxEdge}` : base;
+}

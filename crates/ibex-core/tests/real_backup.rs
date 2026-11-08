@@ -618,3 +618,346 @@ fn whatsapp_media_resolves_and_kinds_are_inferred_from_files() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Photos (M5)
+// ---------------------------------------------------------------------------
+
+/// Every asset in the library must resolve to a file, and to a derivative.
+///
+/// The grid shows Apple's pre-rendered JPEG rather than decoding anything, so
+/// a missing derivative is a blank tile. On the backup this was written
+/// against both were 100%.
+#[test]
+fn every_photo_asset_resolves_to_a_file_and_a_derivative() {
+    use ibex_core::extractors::{PhotoAvailability, PhotoCursor, PhotoFilter, PhotosDb};
+
+    let backup = backup_or_skip!();
+    let Ok(db) = PhotosDb::open(&backup) else {
+        println!("skipping: this backup has no readable Photos.sqlite");
+        return;
+    };
+
+    let filter = PhotoFilter::default();
+    let total = db.count(&filter).unwrap();
+    assert!(total > 0, "the library should hold assets");
+
+    let mut seen = 0u64;
+    let mut originals = 0u64;
+    let mut derivatives = 0u64;
+    let mut live = 0u64;
+    let mut live_resolved = 0u64;
+    let mut edited = 0u64;
+    let mut edited_resolved = 0u64;
+    let mut missing = 0u64;
+    let mut ids = std::collections::HashSet::new();
+
+    let mut cursor = Some(PhotoCursor::first(PhotoCursor::MAX_LIMIT));
+    while let Some(c) = cursor {
+        let page = db.list(&filter, c).unwrap();
+        for asset in &page.assets {
+            seen += 1;
+            assert!(
+                ids.insert(asset.id.clone()),
+                "paging returned an asset twice"
+            );
+            if asset.file_id.is_some() {
+                originals += 1;
+            }
+            if asset.thumb_file_id.is_some() {
+                derivatives += 1;
+            }
+            if asset.live {
+                live += 1;
+                live_resolved += u64::from(asset.live_file_id.is_some());
+            }
+            if asset.edited {
+                edited += 1;
+                edited_resolved += u64::from(asset.edited_file_id.is_some());
+            }
+            if asset.availability == PhotoAvailability::Missing {
+                missing += 1;
+            }
+            // Dates must be plausible: a broken epoch conversion shows up here
+            // rather than as a wrong-looking grid.
+            if let Some(taken) = asset.created_at {
+                assert!(
+                    taken.timestamp() > 946_684_800,
+                    "a capture date before 2000 means the epoch is wrong"
+                );
+            }
+        }
+        cursor = page.older;
+    }
+
+    assert_eq!(seen, total, "paging must visit every asset exactly once");
+    assert_eq!(
+        originals,
+        seen,
+        "{} of {seen} assets have no file behind them",
+        seen - originals
+    );
+    assert_eq!(
+        derivatives,
+        seen,
+        "{} of {seen} assets have no pre-rendered thumbnail",
+        seen - derivatives
+    );
+    assert_eq!(missing, 0, "assets in the library but not in the backup");
+    assert_eq!(
+        live, live_resolved,
+        "every Live Photo should find its companion video"
+    );
+    println!(
+        "assets {seen} / originals {originals} / derivatives {derivatives} / \
+         live {live} (companions {live_resolved}) / edited {edited} (renders {edited_resolved})"
+    );
+    assert!(
+        edited_resolved * 100 >= edited * 95,
+        "only {edited_resolved} of {edited} edits found a FullSizeRender"
+    );
+}
+
+/// `ZUNIFORMTYPEIDENTIFIER` contradicts the real file often enough that it
+/// cannot be trusted, which is why the extractor ignores it.
+#[test]
+fn the_recorded_uti_disagrees_with_the_filename_so_it_must_not_be_used() {
+    use ibex_core::extractors::PhotosDb;
+
+    let backup = backup_or_skip!();
+    let Ok(db) = PhotosDb::open(&backup) else {
+        println!("skipping: this backup has no readable Photos.sqlite");
+        return;
+    };
+
+    let mismatched: i64 = db
+        .connection()
+        .query_one(
+            "SELECT count(*) FROM ZASSET
+             WHERE ZUNIFORMTYPEIDENTIFIER = 'public.jpeg'
+               AND lower(ZFILENAME) LIKE '%.png'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    println!("assets whose recorded type contradicts their file: {mismatched}");
+    assert!(
+        mismatched > 0,
+        "this backup was chosen because it has this discrepancy; if it is now 0, \
+         re-check whether the extractor still needs to ignore the column"
+    );
+}
+
+/// Hidden state lives in `ZVISIBILITYSTATE`, not `ZHIDDEN`.
+#[test]
+fn hidden_assets_are_marked_only_by_visibility_state() {
+    use ibex_core::extractors::PhotosDb;
+
+    let backup = backup_or_skip!();
+    let Ok(db) = PhotosDb::open(&backup) else {
+        println!("skipping: this backup has no readable Photos.sqlite");
+        return;
+    };
+
+    let (hidden_column, visibility_column): (i64, i64) = db
+        .connection()
+        .query_one(
+            "SELECT
+                 (SELECT count(*) FROM ZASSET WHERE coalesce(ZHIDDEN, 0) <> 0),
+                 (SELECT count(*) FROM ZASSET WHERE coalesce(ZVISIBILITYSTATE, 0) <> 0)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    println!("ZHIDDEN set: {hidden_column} / ZVISIBILITYSTATE set: {visibility_column}");
+    assert_eq!(
+        hidden_column, 0,
+        "ZHIDDEN was 0 for every asset on this backup; if that has changed, the \
+         hidden filter's reasoning needs revisiting"
+    );
+    assert!(
+        visibility_column > 0,
+        "the Hidden album should not be empty"
+    );
+}
+
+/// The default grid is the library minus the trashed and hidden albums.
+#[test]
+fn the_grid_total_reconciles_with_the_trashed_and_hidden_albums() {
+    use ibex_core::extractors::{PhotoFilter, PhotosDb};
+
+    let backup = backup_or_skip!();
+    let Ok(db) = PhotosDb::open(&backup) else {
+        println!("skipping: this backup has no readable Photos.sqlite");
+        return;
+    };
+
+    let rows: i64 = db
+        .connection()
+        .query_one("SELECT count(*) FROM ZASSET", [], |row| row.get(0))
+        .unwrap();
+    let grid = db.count(&PhotoFilter::default()).unwrap();
+    let trashed = db
+        .count(&PhotoFilter {
+            trashed_only: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let hidden = db
+        .count(&PhotoFilter {
+            hidden_only: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+    println!("rows {rows} = grid {grid} + trashed {trashed} + hidden {hidden}");
+    assert_eq!(
+        rows as u64,
+        grid + trashed + hidden,
+        "every asset belongs to exactly one of the three views"
+    );
+
+    // And the month timeline accounts for the whole grid.
+    let months = db.timeline(&PhotoFilter::default()).unwrap();
+    let dated: u64 = months.iter().map(|m| m.count).sum();
+    assert_eq!(
+        dated,
+        grid,
+        "{} assets fell outside every month",
+        grid - dated
+    );
+    println!("{} months span the library", months.len());
+}
+
+/// Album membership comes from the join table Core Data's entity map names.
+#[test]
+fn albums_reconcile_with_the_join_table() {
+    use ibex_core::extractors::PhotosDb;
+
+    let backup = backup_or_skip!();
+    let Ok(db) = PhotosDb::open(&backup) else {
+        println!("skipping: this backup has no readable Photos.sqlite");
+        return;
+    };
+
+    let table = db
+        .album_join_table()
+        .expect("the album join table should be discoverable")
+        .to_string();
+    println!("album join table: {table}");
+
+    let albums = db.albums().unwrap();
+    let listed: u64 = albums.iter().map(|a| a.count).sum();
+
+    // The same total, computed straight from the join table. Joining on Core
+    // Data's `Z_FOK_` ordering column instead of the foreign key silently
+    // under-reports this, which is what this guards.
+    let album_column = table.replace("ASSETS", "ALBUMS");
+    let sql = format!(
+        "SELECT count(*) FROM \"{table}\" j
+         JOIN ZGENERICALBUM g ON g.Z_PK = j.{album_column}
+         JOIN ZASSET a ON a.Z_PK = j.Z_3ASSETS
+         WHERE g.ZTITLE IS NOT NULL AND trim(g.ZTITLE) <> ''"
+    );
+    let direct: i64 = db
+        .connection()
+        .query_one(&sql, [], |row| row.get(0))
+        .unwrap();
+
+    println!("{} titled albums holding {listed} assets", albums.len());
+    assert_eq!(
+        listed, direct as u64,
+        "the album listing disagrees with the join table"
+    );
+    // Counts must never be zero for a listed album: an empty album is left out.
+    assert!(albums.iter().all(|a| a.count > 0));
+}
+
+/// The HEIC path end to end, on files that are actually HEIC.
+///
+/// More than half of a real library is HEIC and WebKitGTK cannot decode any of
+/// it, so this is the one thing standing between the lightbox and a blank
+/// screen. The fixture proves the pipeline with AVIF; this proves the codec.
+#[test]
+fn real_heic_assets_decode_to_jpegs_of_the_right_size() {
+    use ibex_core::extractors::{PhotoCursor, PhotoFilter, PhotosDb};
+    use ibex_core::thumbs;
+
+    let backup = backup_or_skip!();
+    let Ok(db) = PhotosDb::open(&backup) else {
+        println!("skipping: this backup has no readable Photos.sqlite");
+        return;
+    };
+
+    // Walk pages until a handful of HEIC assets have been rendered. Decoding a
+    // 48 MP image is not cheap, so this samples rather than sweeping.
+    const SAMPLE: usize = 8;
+    const MAX_EDGE: u32 = 512;
+    let mut rendered = 0usize;
+    let mut cursor = Some(PhotoCursor::first(200));
+    'outer: while let Some(c) = cursor {
+        let page = db.list(&PhotoFilter::default(), c).unwrap();
+        for asset in &page.assets {
+            // The real device's files sniff as "image/heif", not
+            // "image/heic" — a different compatible-brand box than `infer`
+            // maps to the stricter name. `thumbs::is_heif` already accepts
+            // both; match that here rather than one fixed string.
+            if !asset
+                .mime
+                .as_deref()
+                .is_some_and(|m| m.starts_with("image/hei"))
+            {
+                continue;
+            }
+            let Some(file_id) = asset.display_file_id() else {
+                continue;
+            };
+            let entry = backup.get(file_id).unwrap().expect("resolved file id");
+            let render = thumbs::render(&backup, &entry, MAX_EDGE).unwrap();
+            assert!(!render.original, "a HEIC has to be converted");
+            assert_eq!(render.mime, "image/jpeg");
+
+            let bytes = std::fs::read(&render.path).unwrap();
+            assert_eq!(&bytes[..2], &[0xFF, 0xD8], "the output is not a JPEG");
+            let (width, height) = jpeg_dimensions(&bytes).expect("a JPEG has an SOF marker");
+            assert_eq!(
+                width.max(height),
+                MAX_EDGE,
+                "the long edge should be exactly the requested size"
+            );
+            assert!(width > 0 && height > 0);
+
+            rendered += 1;
+            if rendered == SAMPLE {
+                break 'outer;
+            }
+        }
+        cursor = page.older;
+    }
+
+    assert!(
+        rendered > 0,
+        "no HEIC assets were found, so the decode path was never exercised"
+    );
+    println!("decoded {rendered} real HEIC assets to JPEG at {MAX_EDGE}px");
+}
+
+/// Width and height from a JPEG's SOF marker.
+fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut at = 2;
+    while at + 9 < bytes.len() {
+        if bytes[at] != 0xFF {
+            at += 1;
+            continue;
+        }
+        let marker = bytes[at + 1];
+        if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+            let height = u16::from_be_bytes([bytes[at + 5], bytes[at + 6]]);
+            let width = u16::from_be_bytes([bytes[at + 7], bytes[at + 8]]);
+            return Some((u32::from(width), u32::from(height)));
+        }
+        let length = u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        at += 2 + length;
+    }
+    None
+}

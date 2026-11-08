@@ -49,17 +49,29 @@ export function Exports() {
                   <>
                     <dt>Format</dt>
                     <dd>{report.format}</dd>
-                    <dt>Conversations</dt>
+                    <dt>{report.source === "photos" ? "Folders" : "Conversations"}</dt>
                     <dd>{formatCount(report.totals.conversations)}</dd>
-                    <dt>Messages</dt>
+                    <dt>{report.source === "photos" ? "Items" : "Messages"}</dt>
                     <dd>{formatCount(report.totals.messages)}</dd>
-                    <dt>Attachments</dt>
-                    <dd>
-                      {formatCount(report.totals.attachmentsCopied)} copied
-                      {report.totals.attachmentsMissing > 0
-                        ? `, ${formatCount(report.totals.attachmentsMissing)} not in backup`
-                        : ""}
-                    </dd>
+                    {report.source === "photos" ? null : (
+                      <>
+                        <dt>Attachments</dt>
+                        <dd>
+                          {formatCount(report.totals.attachmentsCopied)} copied
+                          {report.totals.attachmentsMissing > 0
+                            ? `, ${formatCount(report.totals.attachmentsMissing)} not in backup`
+                            : ""}
+                        </dd>
+                      </>
+                    )}
+                    {report.source === "photos" && report.totals.attachmentsMissing > 0 ? (
+                      <>
+                        <dt>Missing</dt>
+                        <dd>
+                          {formatCount(report.totals.attachmentsMissing)} item(s) not in backup
+                        </dd>
+                      </>
+                    ) : null}
                     <dt>Written</dt>
                     <dd>{formatBytes(report.totals.bytesWritten)}</dd>
                     <dt>Folder</dt>

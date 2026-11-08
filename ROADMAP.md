@@ -161,13 +161,47 @@ Notes:
   structure is asserted; the resemblance needs eyes.
 
 ## M5: Photos
-- [ ] `Photos.sqlite` parsing (ZASSET / ZGENERICASSET), albums join-table discovery, cloud-only detection
-- [ ] DCIM fallback with EXIF dates
-- [ ] Thumbnail service (image + HEIC via libheif-rs), bounded worker pool, `ibex://thumb/`
-- [ ] Photos grid (virtualized, month headers), lightbox with metadata, multi-select, export originals (optional HEIC→JPEG)
-- [ ] Live Photo pairing
+- [x] `Photos.sqlite` parsing (ZASSET / ZGENERICASSET), albums join-table discovery, cloud-only detection
+- [x] DCIM fallback with EXIF dates
+- [x] HEIC decode service for the lightbox (`libheif-rs`), bounded worker pool, `ibex://thumb/`
+- [~] Photos grid (virtualized, month headers), lightbox with metadata, multi-select (shift/ctrl-click
+      and "Export N items"), export via the existing `ExportDialog` — **not done:** rubber-band
+      drag-select, an "export originals instead of edits" toggle, and an optional HEIC→JPEG
+      conversion on export (it writes the file as-is)
+- [x] Live Photo pairing, including playback on press-and-hold in the lightbox
 
 **Done when:** you can scroll the whole camera roll smoothly and export a selection.
+
+Notes:
+- **The grid needs no thumbnail service at all.** Apple already leaves a pre-rendered 360 px
+  JPEG in the backup for every asset (`Thumbnails/V2/.../5005.JPG`) — 7,909 of them for 7,865
+  real assets, not one short. `thumbs::render` (libheif + a bounded semaphore) exists only for
+  the lightbox, where over half a real library is HEIC and WebKitGTK cannot decode any of it.
+  This deleted most of what "thumbnail service, bounded worker pool" implied when the milestone
+  was planned.
+- **Two concurrency bugs, not specific to Photos, found by this milestone's access pattern**
+  (four files resolved per item instead of one) and fixed at the source rather than in a test
+  workaround: `Backup::has_data` was decrypting whole files just to check they existed (28 GB /
+  41s for one page of a real library, now 2.7s with no decryption); every "write a temp file,
+  then rename" in the crate shared one fixed temp name across callers, which a cold parallel
+  test run against one real backup corrupted outright. See the `fix(core)` commit.
+- **Third real-data classification bug, same shape as `ZMESSAGECOUNTER` and `ZMESSAGETYPE`:**
+  `ZUNIFORMTYPEIDENTIFIER` claims JPEG for 578 real assets that are PNG (mostly screenshots), and
+  `ZHIDDEN` was `0` for all 7,865 real rows — `ZVISIBILITYSTATE` is where "hidden" actually lives.
+  Neither is used; the media type comes from the file, hidden state checks both columns.
+- **Album discovery needed Core Data's entity map, not a `sqlite_master` scan**: the real library
+  has eleven `Z_%ASSETS` tables, and the one real join table has a `Z_FOK_` ordering column beside
+  its real foreign key — joining on that under-reported 3 albums with members where the real
+  count is 7 holding 651 assets. docs/DATA_SOURCES.md has the full story.
+- Real HEIC files sniff as `image/heif`, not `image/heic` — code branching on the type has to
+  accept both, which is also why the module is named generically (`thumbs`, not `heic`).
+- Verified on real data: 7,162 of 7,865 assets in the default view (656 trashed, 47 hidden),
+  **100% of originals and derivatives resolved**, every Live Photo found its companion, 1,065 of
+  1,074 edits found their render. A sample of real HEIC assets decoded to correctly-sized JPEGs.
+  The backup folder's newest mtime was unchanged after all of this session's testing.
+- **Not verified by me:** that the grid scrolls smoothly and the lightbox looks right on a real
+  7,000+ asset library — structure and counts are asserted, not feel. HEIC pass-through in the
+  lightbox vs the WebKitGTK-can't-decode-it baseline also needs eyes, not just a byte comparison.
 
 ## M6: Voice Memos and Documents
 - [ ] Voice Memos: probe locations, titles from CloudRecordings.db, list/play/export with titled file names

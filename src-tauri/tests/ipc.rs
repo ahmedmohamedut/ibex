@@ -719,9 +719,9 @@ fn the_sidebar_learns_that_messages_is_now_implemented() {
     assert_eq!(sms["available"], true);
     assert_eq!(sms["implemented"], true, "M2 ships the Messages view");
 
-    // M3 ships WhatsApp too; the rest are still pending, so the sidebar stays
-    // greyed there.
-    let shipped = ["sms", "whatsapp"];
+    // M3 ships WhatsApp and M5 ships Photos too; the rest are still pending,
+    // so the sidebar stays greyed there.
+    let shipped = ["sms", "whatsapp", "photos"];
     for source in sources {
         let id = source["id"].as_str().unwrap();
         assert_eq!(

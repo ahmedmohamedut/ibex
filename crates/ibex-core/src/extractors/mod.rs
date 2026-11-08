@@ -7,6 +7,7 @@
 
 pub mod contacts;
 pub mod message;
+pub mod photos;
 pub mod sms;
 pub mod whatsapp;
 
@@ -14,6 +15,10 @@ pub use contacts::ContactResolver;
 pub use message::{
     AttachmentRef, ConversationSummary, Message, MessageCursor, MessageKind, MessagePage,
     Participant, Reaction, ReactionKind, Service,
+};
+pub use photos::{
+    AlbumSummary, MonthCount, PhotoAsset, PhotoAvailability, PhotoCursor, PhotoFilter, PhotoKind,
+    PhotoPage, Photos, PhotosDb,
 };
 
 /// Whether a source is usable in a given backup.

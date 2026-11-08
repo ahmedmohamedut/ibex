@@ -114,6 +114,15 @@ Re-copying is skipped when a `.stamp` file beside the copy still matches the sou
 and mtimes. The stamp is needed because opening a WAL database read-write legitimately
 checkpoints it, changing the copy's own size, which would otherwise force a copy every time.
 
+**The check-then-copy sequence is guarded by a per-directory lock** (`lock_for`, an in-process
+registry keyed by the working-copy's path). Two callers materializing the *same* database at
+once — the real-backup integration tests do this on every run, since every test opens the same
+backup, and a real app could too on first load — must not interleave their remove/copy steps, or
+a reader can open a connection mid-replacement and find a missing or half-written database. This
+was found, not designed in: a cold, parallel test run against a real backup failed most of its
+tests until the lock was added. Different databases never block each other; only two callers of
+the same one do.
+
 API: `backup.open_db(domain, rel_path) -> Result<rusqlite::Connection>`
 
 ### crypto
@@ -170,7 +179,11 @@ Extractor-specific APIs (examples):
   hold tens of thousands of messages, where `OFFSET` degrades with depth and can skip or repeat
   rows. `MessageCursor`/`MessagePage` carry it.
 - `whatsapp::list_chats`, `whatsapp::list_messages`
-- `photos::list_assets(&backup, Filter, Page)`
+- `photos::PhotosDb::open(&backup)` then `.list(&PhotoFilter, PhotoCursor)`, `.timeline(&PhotoFilter)`
+  for month counts, `.albums()`, `.asset(id)`. Keyset-paginated the same way as messages, on
+  `(ZDATECREATED, Z_PK)`. A `DcimFallback` (`extractors::photos::dcim`) lists `Media/DCIM`
+  directly with EXIF dates when `Photos.sqlite` is missing or unreadable; fixture-tested only —
+  the real backup's library parses.
 - `voice::list_recordings(&backup)`
 - `documents::list_sources(&backup)`, `documents::list_dir(...)`
 - `contacts::resolver(&backup) -> ContactResolver` (normalizes phone numbers and emails, maps to display names; used by sms and whatsapp)
@@ -201,6 +214,30 @@ pub struct AttachmentRef {
 }
 ```
 
+`PhotoAsset` is its own shape, not forced into `Message`: a photo has no sender or body, and
+carries a resolution chain `Message` has no equivalent of —
+
+```rust
+pub struct PhotoAsset {
+    pub id: String,                          // Z_PK
+    pub kind: PhotoKind,                      // Photo | Video
+    pub file_id: Option<String>,              // the original
+    pub thumb_file_id: Option<String>,        // Apple's own 360px derivative
+    pub live_file_id: Option<String>,         // Live Photo companion .MOV
+    pub edited_file_id: Option<String>,       // the rendered edit, when there is one
+    pub edited_live_file_id: Option<String>,
+    // ... favorite, screenshot, edited, live, trashed, hidden, location, availability, ...
+}
+```
+
+`display_file_id()` / `display_live_file_id()` resolve that chain to "what Photos itself would
+show": the edit when there is one, else the original — decided with the project's owner, and the
+rule the exporter and the lightbox both follow rather than each encoding it separately.
+
+The grid never decodes anything: Apple already leaves a 360 px JPEG derivative in the backup for
+every asset (`Media/PhotoData/Thumbnails/V2/<dir>/<file>/5005.JPG`), which `thumb_file_id`
+points at. Decoding only happens for the lightbox — see `thumbs` below.
+
 ### export
 
 `export::run(&backup, &selection, format, out, &options, progress, cancel)` dispatches on the
@@ -219,6 +256,19 @@ shape but not the same signature — WhatsApp takes an `include_broadcasts` flag
 that one difference in a single place without the lifetimes a trait object would need. Its
 `Debug` prints only the source id: the databases behind it hold message content, which must never
 reach a log.
+
+**Photos is selected by `Selection.source == "photos"`, ahead of the format match** — it has one
+export shape (copy the files, named and dated), not four, so `ExportFormat` is not consulted for
+it. `Selection` grew one additive field for this, `photo_filter: Option<PhotoFilter>`
+(`#[serde(default)]`, so every existing caller is unaffected): empty `conversation_ids` plus no
+filter means the same view the grid shows by default; an explicit filter or explicit asset ids
+override it, exactly as "every conversation" vs "these ids" already worked for a chat source.
+`PhotosExporter` (`export/photos.rs`) writes `<year>/<YYYY-MM-DD> <name>.<ext>`, the edited render
+preferred over the original, a Live Photo's companion `.MOV` copied alongside its still under the
+same name. `ConversationReport`/`ExportTotals` are reused rather than given a parallel photos
+shape — `messages`/`conversations` become counts of items/year-folders — and the UI relabels them
+per `report.source` rather than the DTO gaining chat-specific-sounding fields photos would have to
+leave blank.
 
 `messages_chronological` walks the extractor's existing keyset cursor 500 messages at a time and
 reverses the result, because a thread reads newest-first and an export reads oldest-first.
@@ -270,7 +320,26 @@ event.
 
 ### thumbs
 
-`thumbs::get(&backup, file_id, size) -> PathBuf`: generates JPEG thumbnails into `cache/<backup-id>/thumbs/<size>/<file_id>.jpg`. HEIC via `libheif-rs`, others via `image`. Generation runs on a bounded worker pool.
+`thumbs::render(&backup, &entry, max_edge) -> Render { path, mime, original }`. This exists for
+the lightbox alone — the camera-roll **grid** needs no decoding at all, since Apple leaves a
+pre-rendered JPEG in the backup for every asset (see `extractors::photos` above), and loads that
+directly over the `file` route.
+
+- A web-safe type (JPEG/PNG/GIF/WebP, by sniffed content, not by extension — see the
+  `ZUNIFORMTYPEIDENTIFIER` note in `docs/DATA_SOURCES.md`) is handed back untouched: `original:
+  true`, no re-encode, no quality loss.
+- HEIC/HEIF decodes through `libheif-rs` (context → primary image handle → `LibHeif::decode` into
+  an interleaved RGB plane, copied out row by row because `stride` is padded) and re-encodes to
+  JPEG with `image`, resized to `max_edge` with a `Triangle` filter if requested. Cached at
+  `thumbs/<max_edge>/<file_id>.jpg` — the cache layout this document already specified; nothing
+  changed there.
+- A process-wide counting semaphore (`available_parallelism`) bounds concurrent decodes, so
+  holding an arrow key in the lightbox cannot start one decode per keypress.
+- The render is written to a uniquely-named temp file (`CacheDir::unique_temp_path`, not a fixed
+  `.partial` name) and renamed into place — the same fix the workcopy race above needed, for the
+  same reason: two concurrent renders of one photo must not be able to truncate each other.
+
+`src-tauri/src/protocol.rs`'s `thumb/` route calls this directly; see Media protocol below.
 
 ### search
 
@@ -327,7 +396,10 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `sms_messages` | `handle, conversationId, cursor?` | `MessagePage` (messages newest-first, plus the cursor for older) |
 | `wa_chats` | `handle, page` | `Page<ConversationSummary>` |
 | `wa_messages` | `handle, chatId, cursor` | `Page<Message>` |
-| `photos_list` | `handle, filter, page` | `Page<PhotoAsset>` |
+| `photos_list` | `handle, filter?, cursor?` | `PhotoPage` (keyset, like `MessagePage`) |
+| `photos_timeline` | `handle, filter?` | `Vec<MonthCount>` (newest month first) |
+| `photos_albums` | `handle` | `Vec<AlbumSummary>` (titled albums only) |
+| `photo_detail` | `handle, id` | `PhotoAsset` |
 | `voice_list` | `handle` | `Vec<VoiceRecording>` |
 | `docs_sources` | `handle` | `Vec<DocSource>` |
 | `start_export` | `handle, selection, format, outDir, options?` | `JobId` (returns at once; the work reports by event) |
@@ -359,10 +431,17 @@ Registered with `register_asynchronous_uri_scheme_protocol("ibex", ...)`.
   16 MiB is answered as a `206` first chunk, so a large video is never buffered whole.
   The handler is a pure `protocol::respond(&AppState, &Request) -> Response`, which is how the
   status and header matrix is unit-tested without a webview.
-- `ibex://localhost/thumb/<handle>/<fileId>?s=256`: thumbnail JPEG. **Milestone M5**; answers `404`
-  until then.
+- `ibex://localhost/thumb/<handle>/<fileId>?s=<maxEdge>`: a displayable version of the file, via
+  `ibex_core::thumbs::render` — a web-safe image passed through unchanged, or a HEIC/HEIF
+  re-encoded to JPEG at `maxEdge` (full size when `s` is absent or unparseable). Shares the same
+  Range-aware response path as `file` (`respond_file`/`respond_thumb` both call `serve_path`), so
+  the status/header matrix is one tested implementation, not two. `404` for an unknown handle,
+  unknown file, data absent from the backup, or a file that cannot be rendered; `405` for
+  non-`GET`.
 
-The frontend builds URLs with one helper, `src/api/media.ts`. On Windows the scheme form is `http://ibex.localhost/...`, so the helper must branch on platform even though Linux is the primary target.
+The frontend builds URLs with two helpers in `src/api/media.ts`: `fileUrl` and `thumbUrl`. On
+Windows the scheme form is `http://ibex.localhost/...`, so both branch on platform even though
+Linux is the primary target.
 
 ## Frontend
 

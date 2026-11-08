@@ -10,11 +10,19 @@ import { toastError } from "./Toasts";
 function summarise(job: JobInfo): string {
   const report = job.report;
   if (!report) return job.label;
-  const parts = [
-    `${formatCount(report.totals.conversations)} conversation(s)`,
-    `${formatCount(report.totals.messages)} message(s)`,
-  ];
-  if (report.totals.attachmentsCopied > 0) {
+  // Photos has no "conversations" or "messages": the chat-shaped report
+  // fields are reused as a count of folders and items, so the label matches.
+  const isPhotos = report.source === "photos";
+  const parts = isPhotos
+    ? [
+        `${formatCount(report.totals.conversations)} folder(s)`,
+        `${formatCount(report.totals.messages)} item(s)`,
+      ]
+    : [
+        `${formatCount(report.totals.conversations)} conversation(s)`,
+        `${formatCount(report.totals.messages)} message(s)`,
+      ];
+  if (!isPhotos && report.totals.attachmentsCopied > 0) {
     parts.push(`${formatCount(report.totals.attachmentsCopied)} attachment(s)`);
   }
   if (report.totals.bytesWritten > 0) {
@@ -112,7 +120,8 @@ export function JobToasts() {
                 {job.report && job.report.totals.attachmentsMissing > 0 ? (
                   <>
                     <br />
-                    {formatCount(job.report.totals.attachmentsMissing)} attachment(s)
+                    {formatCount(job.report.totals.attachmentsMissing)}{" "}
+                    {job.report.source === "photos" ? "item(s)" : "attachment(s)"}
                     were not in the backup.
                   </>
                 ) : null}
