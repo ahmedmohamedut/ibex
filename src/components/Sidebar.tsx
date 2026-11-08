@@ -92,8 +92,9 @@ export function Sidebar() {
       <button
         type="button"
         className="sidebar__item"
-        disabled
-        title="Export history arrives in milestone M4"
+        aria-current={section === "exports"}
+        onClick={() => setSection("exports")}
+        title="Exports run in this session"
       >
         <Share size={15} aria-hidden="true" />
         <span>Exports</span>

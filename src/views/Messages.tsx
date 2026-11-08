@@ -4,6 +4,7 @@ import { useSmsConversations, useSmsMessages } from "../api/sms";
 import type { ConversationSummary } from "../bindings/ConversationSummary";
 import { ChatThread } from "../components/chat/ChatThread";
 import { EmptyState, Spinner } from "../components/EmptyState";
+import { ExportDialog, type ExportScope } from "../components/ExportDialog";
 import { formatCount, formatDate } from "../components/format";
 import { useUi } from "../store/ui";
 
@@ -28,6 +29,7 @@ export function Messages() {
   const backup = useUi((s) => s.backup);
   const [selected, setSelected] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [exporting, setExporting] = useState<ExportScope | null>(null);
 
   const conversations = useSmsConversations(backup?.handle);
   const thread = useSmsMessages(backup?.handle, selected);
@@ -52,6 +54,19 @@ export function Messages() {
 
   return (
     <div className="panes">
+      {exporting ? (
+        <ExportDialog
+          handle={backup.handle}
+          source="sms"
+          scope={exporting}
+          messageCount={
+            exporting.kind === "conversation"
+              ? Number(current?.messageCount ?? 0)
+              : undefined
+          }
+          onClose={() => setExporting(null)}
+        />
+      ) : null}
       <div className="pane pane--list">
         <div className="pane__header">
           <input
@@ -141,8 +156,14 @@ export function Messages() {
               <button
                 type="button"
                 className="button"
-                disabled
-                title="Export arrives in milestone M4"
+                onClick={() =>
+                  setExporting({
+                    kind: "conversation",
+                    id: current.id,
+                    label: label(current),
+                  })
+                }
+                title="Export this conversation"
               >
                 Export
               </button>

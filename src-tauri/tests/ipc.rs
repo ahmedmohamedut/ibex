@@ -833,3 +833,94 @@ fn whatsapp_chats_and_messages_come_back_over_ipc() {
     let (a, b) = (ids(&first_page), ids(&second));
     assert!(b.iter().all(|id| !a.contains(id)), "pages must not overlap");
 }
+
+#[test]
+fn an_export_runs_as_a_job_and_reports_what_it_did() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = FixtureBackup::new()
+        .with_sms()
+        .with_address_book()
+        .build(tmp.path())
+        .unwrap();
+
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let backup = ibex_core::Backup::open_with_cache(
+        &root,
+        None,
+        ibex_core::CacheDir::at(tmp.path().join("cache")),
+    )
+    .unwrap();
+    let handle = app.state::<AppState>().insert(backup);
+    let out = tmp.path().join("export-out");
+
+    // Starting returns a job id immediately rather than blocking.
+    let job_id = invoke(
+        &webview,
+        "start_export",
+        json!({
+            "handle": handle,
+            "selection": { "source": "sms", "conversationIds": [] },
+            "format": "html",
+            "outDir": out.to_str().unwrap(),
+            "options": null
+        }),
+    )
+    .unwrap();
+    let job_id = job_id.as_str().expect("a job id").to_string();
+    assert!(job_id.starts_with("job-"), "got {job_id}");
+
+    // The job appears in the registry straight away, so the Exports view can
+    // show it while it runs.
+    let jobs = invoke(&webview, "list_jobs", json!({})).unwrap();
+    let listed = jobs.as_array().unwrap();
+    assert!(listed.iter().any(|j| j["id"] == job_id.as_str()));
+    assert_eq!(listed[0]["kind"], "export");
+
+    // Wait for it to finish. The work runs on a blocking worker, so poll the
+    // registry rather than guessing at a sleep.
+    let mut report = None;
+    for _ in 0..200 {
+        let jobs = invoke(&webview, "list_jobs", json!({})).unwrap();
+        let job = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["id"] == job_id.as_str())
+            .cloned()
+            .unwrap();
+        if job["state"] != "running" {
+            report = Some(job);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let job = report.expect("the export should finish");
+    assert_eq!(job["state"], "finished", "got {job}");
+
+    // The report crossed IPC in camelCase, as the bindings declare.
+    let report = &job["report"];
+    assert_eq!(report["format"], "html");
+    assert_eq!(report["cancelled"], false);
+    assert!(report["totals"]["messages"].as_u64().unwrap() > 0);
+    assert!(report.get("ibexVersion").is_some(), "{report}");
+    assert!(report.get("formulasNeutralised").is_some());
+
+    // And the files really exist where the report says.
+    assert!(out.join("index.html").is_file());
+    assert!(out.join("export-report.json").is_file());
+}
+
+#[test]
+fn cancelling_an_unknown_job_is_false_not_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app(tmp.path());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+
+    let cancelled = invoke(&webview, "cancel_job", json!({ "jobId": "job-nope" })).unwrap();
+    assert_eq!(cancelled, false);
+}

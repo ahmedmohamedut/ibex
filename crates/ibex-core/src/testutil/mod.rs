@@ -250,6 +250,16 @@ impl FixtureBackup {
         // MISSING_PATH is intentionally not written.
     }
 
+    /// Add an `sms.db` whose names and message bodies are injection attempts.
+    ///
+    /// Used by the export tests: HTML escaping and CSV formula neutralisation
+    /// are the two places where getting this wrong turns message data into
+    /// executable content on someone else's machine.
+    pub fn with_hostile_sms(self) -> Self {
+        self.with_db("HomeDomain", "Library/SMS/sms.db", &sms::hostile_sql())
+            .with_file("MediaDomain", sms::PRESENT_ATTACHMENT, &samples::png())
+    }
+
     /// Add an `AddressBook.sqlitedb` with a few synthetic contacts.
     pub fn with_address_book(self) -> Self {
         self.with_db(

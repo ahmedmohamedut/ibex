@@ -7,6 +7,7 @@
 pub mod commands;
 pub mod dto;
 pub mod error;
+pub mod jobs;
 pub mod protocol;
 pub mod recents;
 pub mod state;
@@ -36,6 +37,9 @@ macro_rules! ibex_invoke_handler {
             $crate::commands::backup_stats,
             $crate::commands::save_file_as,
             $crate::commands::clear_cache,
+            $crate::commands::start_export,
+            $crate::commands::cancel_job,
+            $crate::commands::list_jobs,
             $crate::commands::total_cache_size,
         ]
     };

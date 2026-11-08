@@ -41,6 +41,8 @@ enum Command {
     /// WhatsApp chats.
     #[command(subcommand)]
     Wa(WaCommand),
+    /// Export conversations to a folder.
+    Export(ExportArgs),
     /// Write a synthetic backup, for exercising the CLI without a real one.
     #[cfg(feature = "fixture")]
     Fixture(FixtureArgs),
@@ -109,6 +111,46 @@ enum SmsCommand {
     Convs(SmsConvsArgs),
     /// List messages in one conversation.
     Msgs(SmsMsgsArgs),
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CliFormat {
+    Html,
+    Csv,
+    Json,
+    Files,
+}
+
+impl From<CliFormat> for ibex_core::ExportFormat {
+    fn from(value: CliFormat) -> Self {
+        match value {
+            CliFormat::Html => ibex_core::ExportFormat::Html,
+            CliFormat::Csv => ibex_core::ExportFormat::Csv,
+            CliFormat::Json => ibex_core::ExportFormat::Json,
+            CliFormat::Files => ibex_core::ExportFormat::Files,
+        }
+    }
+}
+
+#[derive(Args)]
+struct ExportArgs {
+    #[command(flatten)]
+    backup: BackupArgs,
+    /// Which source: sms or wa.
+    source: String,
+    /// A conversation id, or `all`.
+    conversation: String,
+    #[arg(long, value_enum, default_value_t = CliFormat::Html)]
+    format: CliFormat,
+    /// Directory to write into. Created if missing.
+    #[arg(long)]
+    out: PathBuf,
+    /// Do not copy attachment files.
+    #[arg(long)]
+    no_attachments: bool,
+    /// Include WhatsApp status and channel feeds.
+    #[arg(long)]
+    all_sessions: bool,
 }
 
 #[derive(Subcommand)]
@@ -261,6 +303,7 @@ fn main() -> Result<()> {
         Command::Sms(SmsCommand::Msgs(args)) => sms_msgs(args),
         Command::Wa(WaCommand::Chats(args)) => wa_chats(args),
         Command::Wa(WaCommand::Msgs(args)) => wa_msgs(args),
+        Command::Export(args) => export(args),
         #[cfg(feature = "fixture")]
         Command::Fixture(args) => fixture(args),
     }
@@ -537,6 +580,83 @@ fn sql(args: &SqlArgs) -> Result<()> {
 /// Belt and braces: the connection is opened against a working copy, this
 /// keyword check runs first, and `Statement::readonly` is checked after
 /// preparing.
+/// Export conversations.
+fn export(args: &ExportArgs) -> Result<()> {
+    use ibex_core::export::{CancelToken, Progress};
+    use ibex_core::{ExportOptions, Selection};
+
+    // `wa` on the command line, `whatsapp` internally.
+    let source = match args.source.as_str() {
+        "sms" => "sms",
+        "wa" | "whatsapp" => "whatsapp",
+        other => bail!("unknown source {other:?}; expected sms or wa"),
+    };
+    let selection = if args.conversation == "all" {
+        Selection::all(source)
+    } else {
+        Selection::one(source, &args.conversation)
+    };
+    let options = ExportOptions {
+        include_attachments: !args.no_attachments,
+        include_broadcasts: args.all_sessions,
+        ..Default::default()
+    };
+
+    let backup = args.backup.open()?;
+    let format: ibex_core::ExportFormat = args.format.into();
+
+    // Progress to stderr, so stdout stays the report. The trait takes `Fn`,
+    // so the last-seen counter lives in a Cell rather than being captured
+    // mutably.
+    let last = std::cell::Cell::new(0u64);
+    let progress = |p: Progress| {
+        if p.done >= last.get() {
+            eprint!("\r{} ({}/{})", p.message, p.done, p.total.unwrap_or(0));
+            let _ = std::io::stderr().flush();
+            last.set(p.done);
+        }
+    };
+
+    let report = ibex_core::export::run(
+        &backup,
+        &selection,
+        format,
+        &args.out,
+        &options,
+        &progress,
+        &CancelToken::new(),
+    )?;
+    eprintln!();
+
+    println!("Exported to    {}", report.output_dir);
+    println!("Format         {}", report.format);
+    println!("Source         {}", report.source);
+    println!("Conversations  {}", report.totals.conversations);
+    println!("Messages       {}", report.totals.messages);
+    println!("Attachments    {} copied", report.totals.attachments_copied);
+    if report.totals.attachments_missing > 0 {
+        println!(
+            "               {} referenced but not in the backup",
+            report.totals.attachments_missing
+        );
+    }
+    println!("Bytes written  {}", human_size(report.totals.bytes_written));
+    if report.formulas_neutralised > 0 {
+        println!(
+            "CSV formulas   {} cell(s) prefixed so a spreadsheet shows them as text",
+            report.formulas_neutralised
+        );
+    }
+    if report.cancelled {
+        println!("Status         CANCELLED - this export is incomplete");
+    }
+    for warning in &report.warnings {
+        println!("Warning        {warning}");
+    }
+    println!("\nReport         {}/export-report.json", report.output_dir);
+    Ok(())
+}
+
 /// List WhatsApp chats.
 fn wa_chats(args: &WaChatsArgs) -> Result<()> {
     use ibex_core::extractors::whatsapp::WhatsAppDb;

@@ -4,6 +4,8 @@ import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { applyTheme, useUi } from "./store/ui";
+import { Exports } from "./views/Exports";
+import { JobToasts } from "./components/JobToasts";
 import { Messages } from "./views/Messages";
 import { Overview } from "./views/Overview";
 import { Raw } from "./views/Raw";
@@ -44,6 +46,8 @@ function Shell() {
             <Messages />
           ) : section === "whatsapp" ? (
             <WhatsApp />
+          ) : section === "exports" ? (
+            <Exports />
           ) : (
             <Overview />
           )}
@@ -51,6 +55,7 @@ function Shell() {
       ) : (
         <Welcome />
       )}
+      <JobToasts />
       <Toasts />
     </div>
   );

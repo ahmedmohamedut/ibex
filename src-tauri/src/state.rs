@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 use ibex_core::Backup;
 
 use crate::error::IpcError;
+use crate::jobs::JobRegistry;
 
 /// Opaque handle the frontend passes back on every call.
 pub type BackupHandle = String;
@@ -22,6 +23,8 @@ pub struct AppState {
     /// home — which is doubly important here, since a decrypted cache is the
     /// most sensitive thing ibex produces.
     data_root: Option<PathBuf>,
+    /// Long-running work: exports now, the search index in M8.
+    jobs: JobRegistry,
 }
 
 impl AppState {
@@ -35,7 +38,13 @@ impl AppState {
         Self {
             backups: RwLock::new(HashMap::new()),
             data_root: Some(root.into()),
+            jobs: JobRegistry::new(),
         }
+    }
+
+    /// The job registry.
+    pub fn jobs(&self) -> &JobRegistry {
+        &self.jobs
     }
 
     /// The data directory override, if any.

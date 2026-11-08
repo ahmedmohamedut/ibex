@@ -50,7 +50,9 @@ Notes:
 - Added to the IPC contract (recorded in ARCHITECTURE.md): `backup_stats`, `save_file_as`,
   `forget_recent`, `total_cache_size`. No documented signature changed. Overview's "total size"
   comes from a disk walk rather than summing per-domain sizes, which would mean decoding every
-  metadata blob; per-domain sizes wait for M4's job system.
+  metadata blob; per-domain sizes are a progress-reporting walk, available in the CLI
+  (`ibex-cli info`) and deferred in the UI to M8's polish pass rather than M4 as first
+  planned — M4's job system exists, but nothing in the UI asks for the numbers yet.
 - `Manifest` now holds its SQLite connection in a `Mutex`: `rusqlite::Connection` is `Send` but not
   `Sync`, and the app shares one open backup across the command workers and the protocol thread.
 - Verified against synthetic fixtures only — still no real backup on this machine. 160 tests pass,
@@ -123,15 +125,40 @@ Notes:
   but confirming it needs ears.
 
 ## M4: Export engine
-- [ ] Job system in src-tauri: start, progress events, cancel, finished report
-- [ ] `export::html` (per conversation + top-level index, copied media, offline, no JS)
-- [ ] `export::csv`, `export::json`
-- [ ] `export::files` (original names, mtime, de-dup)
-- [ ] Export dialog + job toasts + Exports history view
-- [ ] `export-report.json`
-- [ ] CLI `export sms|wa <conv-id|all> --format html --out DIR`
+- [x] Job system in src-tauri: start, progress events, cancel, finished report
+- [x] `export::html` (per conversation + top-level index, copied media, offline, no JS)
+- [x] `export::csv`, `export::json`
+- [x] `export::files` (original names, mtime, de-dup)
+- [x] Export dialog + job toasts + Exports history view
+- [x] `export-report.json`
+- [x] CLI `export sms|wa <conv-id|all> --format html --out DIR`
 
 **Done when:** you can export one conversation, or all of them, to HTML with media and open it in a browser.
+
+Notes:
+- One `ChatSource` enum over `SmsDb` and `WhatsAppDb` means the four formats are written once and
+  serve SMS, iMessage and WhatsApp alike. `messages_chronological` reuses the keyset cursor, so a
+  66,407-message chat streams a page at a time rather than being held whole.
+- `export/naming.rs` is the deliberately paranoid part: reserved device names, control characters,
+  trailing dots, 200-byte caps on UTF-8 boundaries, case-insensitive de-duplication, and a test
+  that tries to escape the output folder with `../../etc/passwd` as a conversation name.
+- Two output-safety decisions, both counted rather than silent: HTML content passes through one
+  `escape_html` and the export carries **no JavaScript** (so it opens from `file://` forever), and
+  CSV cells starting `=`, `+`, `-` or `@` are prefixed with `'` and reported as
+  `formulasNeutralised`.
+- `export-report.json` reports `attachmentsMissing` and `skipped`, because an export that quietly
+  dropped twelve photos would look exactly like a complete one.
+- Progress is throttled to ~10/s inside the job, not in the UI, while the registry is updated on
+  every callback — the bar stays smooth without the IPC channel becoming the bottleneck.
+- **Third real-data bug caught here:** `ZWACHATSESSION.ZMESSAGECOUNTER` disagrees with the rows
+  actually present for **all 1,107** conversations, so the chat list said 4,493 where the export
+  wrote 4,490. Chat counts now come from a grouped join on `ZWAMESSAGE`
+  (docs/DATA_SOURCES.md).
+- Verified on real data: one SMS conversation to HTML (6,507 messages, 1.6 MiB, every index link
+  resolving, no `<script` in the output) and one WhatsApp chat to CSV (4,490 messages, 1
+  attachment referenced but absent). Backup mtimes unchanged afterwards; the exports were deleted.
+- **Not verified by me:** that an exported HTML conversation *reads* like the app's thread. The
+  structure is asserted; the resemblance needs eyes.
 
 ## M5: Photos
 - [ ] `Photos.sqlite` parsing (ZASSET / ZGENERICASSET), albums join-table discovery, cloud-only detection
@@ -184,6 +211,7 @@ Notes:
 ## M8: Search and polish
 - [ ] FTS5 index job over SMS + WhatsApp; search palette (Ctrl+K) with jump-to-message
 - [ ] Keyboard shortcuts, empty states, error toasts with details
+- [ ] Per-domain sizes in Overview as a background job (deferred from M1)
 - [ ] Performance pass on a large backup (open time, scroll, thumbnail throughput); document numbers
 - [ ] Packaging: AppImage and .deb via `tauri build`; app icon
 

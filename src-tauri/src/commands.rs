@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ibex_core::export::{self, ExportFormat, ExportOptions, Selection};
 use ibex_core::extractors::sms::{Sms, SmsDb};
 use ibex_core::extractors::whatsapp::{WhatsApp, WhatsAppDb};
 use ibex_core::extractors::{ConversationSummary, Extractor, MessageCursor, MessagePage};
@@ -19,6 +20,7 @@ use crate::dto::{
     SourceAvailability, TextPreview,
 };
 use crate::error::IpcError;
+use crate::jobs::{JobFailedEvent, JobFinishedEvent, JobInfo, ProgressThrottle};
 use crate::recents;
 use crate::state::AppState;
 
@@ -411,6 +413,88 @@ pub async fn wa_messages(
         Ok(db.list_messages(&chat_id, cursor)?)
     })
     .await
+}
+
+/// Start an export. Returns at once with a job id; progress arrives as events.
+#[tauri::command]
+pub async fn start_export<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    handle: String,
+    selection: Selection,
+    format: ExportFormat,
+    out_dir: String,
+    options: Option<ExportOptions>,
+) -> Result<String, IpcError> {
+    let backup = state.get(&handle)?;
+    let options = options.unwrap_or_default();
+    let out = PathBuf::from(&out_dir);
+
+    let label = format!(
+        "{} to {}",
+        match selection.source.as_str() {
+            "sms" => "Messages",
+            "whatsapp" => "WhatsApp",
+            other => other,
+        },
+        format.as_str()
+    );
+    let (job_id, cancel) = state.jobs().start("export", &label);
+
+    // The work runs on a blocking worker; this command returns immediately so
+    // the dialog can close and the toast can appear.
+    let job_for_task = job_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let registry_app = app.clone();
+        let throttle = ProgressThrottle::new(app.clone(), job_for_task.clone());
+        let state = tauri::Manager::state::<AppState>(&registry_app);
+
+        let progress = |p: export::Progress| throttle.emit(&p, state.jobs());
+        let result = export::run(
+            &backup, &selection, format, &out, &options, &progress, &cancel,
+        );
+
+        match result {
+            Ok(report) => {
+                state.jobs().finished(&job_for_task, report.clone());
+                let _ = tauri::Emitter::emit(
+                    &app,
+                    "job://finished",
+                    JobFinishedEvent {
+                        job_id: job_for_task,
+                        report,
+                    },
+                );
+            }
+            Err(error) => {
+                let ipc = IpcError::from(error);
+                state.jobs().failed(&job_for_task, ipc.message.clone());
+                let _ = tauri::Emitter::emit(
+                    &app,
+                    "job://failed",
+                    JobFailedEvent {
+                        job_id: job_for_task,
+                        error: ipc.message,
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(job_id)
+}
+
+/// Ask a running job to stop. The export keeps what it has already written and
+/// its report says it was cancelled.
+#[tauri::command]
+pub async fn cancel_job(state: State<'_, AppState>, job_id: String) -> Result<bool, IpcError> {
+    Ok(state.jobs().cancel(&job_id))
+}
+
+/// Every job this session has run, newest first.
+#[tauri::command]
+pub async fn list_jobs(state: State<'_, AppState>) -> Result<Vec<JobInfo>, IpcError> {
+    Ok(state.jobs().list())
 }
 
 #[tauri::command]

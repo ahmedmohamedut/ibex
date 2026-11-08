@@ -24,6 +24,7 @@ pub mod backup;
 pub mod cache;
 pub mod crypto;
 pub mod error;
+pub mod export;
 pub mod extractors;
 pub mod page;
 pub mod util;
@@ -38,6 +39,7 @@ pub use backup::{
 pub use cache::CacheDir;
 pub use crypto::KeyBag;
 pub use error::{BackupError, CryptoError, Error, ExtractError, Result};
+pub use export::{ExportFormat, ExportOptions, ExportReport, Selection};
 pub use extractors::{
     Availability, ContactResolver, ConversationSummary, Message, MessageCursor, MessagePage,
     Service,

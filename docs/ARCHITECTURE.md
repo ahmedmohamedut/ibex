@@ -203,20 +203,70 @@ pub struct AttachmentRef {
 
 ### export
 
-Exporters take a selection plus options and report progress through a callback:
+`export::run(&backup, &selection, format, out, &options, progress, cancel)` dispatches on the
+format:
 
 ```rust
 pub trait Exporter {
-    fn export(&self, backup: &Backup, sel: &Selection, out: &Path,
-              opts: &ExportOptions, progress: &dyn Fn(Progress), cancel: &CancelToken) -> Result<ExportReport>;
+    fn export(&self, backup: &Backup, sel: &Selection, out: &Path, opts: &ExportOptions,
+              progress: &dyn Fn(Progress), cancel: &CancelToken) -> Result<ExportReport>;
 }
 ```
 
-- **HTML:** one folder per conversation with `index.html`, inline CSS, a `media/` folder with relative links. Opens offline in any browser.
-- **CSV / JSON:** one row/object per message, attachments as relative paths.
-- **Files:** copies original files with original names, restores mtime (`filetime`), de-duplicates name clashes with a suffix.
+Each exporter opens the selection's source as a `ChatSource`, so no format knows which app the
+messages came from. `ChatSource` is an enum over `SmsDb` and `WhatsAppDb` (`export/source.rs`). The two have the same
+shape but not the same signature — WhatsApp takes an `include_broadcasts` flag — and an enum keeps
+that one difference in a single place without the lifetimes a trait object would need. Its
+`Debug` prints only the source id: the databases behind it hold message content, which must never
+reach a log.
 
-Every export writes an `export-report.json` listing counts, skipped items and missing attachments.
+`messages_chronological` walks the extractor's existing keyset cursor 500 messages at a time and
+reverses the result, because a thread reads newest-first and an export reads oldest-first.
+
+- **HTML** (`html.rs`): one folder per conversation with `index.html` and `media/`, plus a
+  top-level index listing every conversation. CSS is inlined from one Rust constant mirroring
+  `src/styles/tokens.css`, dark-mode block included. **No JavaScript**, so it opens from a
+  `file://` URL forever. Everything that comes out of a database — bodies, names, file names,
+  `title` attributes — goes through one `escape_html` (`& < > " '`).
+- **CSV** (`csv.rs`): 15 fixed columns, a stable contract. A cell starting with `=`, `+`, `-` or
+  `@` is prefixed with `'` so a spreadsheet cannot execute it, and the substitutions are counted
+  into the report as `formulasNeutralised` — never a silent edit.
+- **JSON** (`json.rs`): `{ conversation, messages: [...] }` streamed with
+  `serde_json::to_writer_pretty`, using the same `Serialize` impls as the IPC DTOs, so there is no
+  second schema to keep in step.
+- **Files** (`files.rs`): original attachments with original names, mtime restored via
+  `Backup::copy_file_to`.
+
+**`naming.rs` is the security-critical part**, because an export is the first thing ibex writes
+that someone else will open. `safe_component` rejects path separators and NUL, strips control
+characters, replaces the Windows-reserved set, refuses the reserved device names (`CON`, `AUX`,
+`COM1`…, with or without an extension), trims trailing dots and spaces, and caps a component at
+200 bytes on a UTF-8 boundary. `NameAllocator` de-duplicates case-insensitively with ` (2)`,
+` (3)`. Paths are only ever built by joining sanitized components, so a conversation named
+`../../etc/passwd` cannot escape the output folder — there is a test that tries.
+
+**Cancellation** is an `Arc<AtomicBool>` checked between messages and before each media copy. A
+cancelled export returns the report it had built, marked `cancelled: true`, and leaves its partial
+folder: a half-export that claimed success would be worse than one that says what it is.
+
+Every export writes `export-report.json` with per-conversation counts, totals, and — the honest
+part — `attachmentsMissing` and `skipped`. An export that silently dropped twelve photos would
+otherwise look identical to a complete one.
+
+### jobs
+
+`src-tauri/src/jobs.rs`. A `JobRegistry` in `AppState` maps `JobId -> { JobInfo, CancelToken }`.
+`start_export` spawns onto `spawn_blocking` and returns the id immediately; the work reports by
+event.
+
+- **Progress is throttled in the job, not in the UI** (`ProgressThrottle`, 100 ms): a
+  66,407-message export would otherwise emit tens of thousands of events and the IPC channel
+  becomes the bottleneck. The first and last updates always go out, so a short job shows something
+  and a finished bar reaches its end. The registry is updated on *every* callback even when the
+  event is dropped, so `list_jobs` is never stale.
+- **Finished jobs stay in the registry** for the session, with their reports, so the Exports view
+  can show them after the toast has gone.
+- Commands are generic over `R: tauri::Runtime` so the mock runtime can drive them in tests.
 
 ### thumbs
 
@@ -280,10 +330,11 @@ All commands are `async`, return `Result<T, IpcError>`, and run blocking work in
 | `photos_list` | `handle, filter, page` | `Page<PhotoAsset>` |
 | `voice_list` | `handle` | `Vec<VoiceRecording>` |
 | `docs_sources` | `handle` | `Vec<DocSource>` |
-| `start_export` | `handle, selection, format, outDir, options` | `JobId` |
+| `start_export` | `handle, selection, format, outDir, options?` | `JobId` (returns at once; the work reports by event) |
 | `start_index` | `handle` | `JobId` |
 | `search` | `handle, query, filters, page` | `Page<SearchHit>` |
-| `cancel_job` | `jobId` | `()` |
+| `cancel_job` | `jobId` | `bool` (whether a running job was asked to stop) |
+| `list_jobs` | | `Vec<JobInfo>` (this session's jobs, newest first, with their reports) |
 | `clear_cache` | `handle` | `u64` (bytes freed) |
 | `peek_backup` | `path` | `BackupPeek` (device info without opening; labels the password prompt) |
 | `backup_stats` | `handle` | `BackupStats` (total bytes on disk, entry count, domain count, cache bytes) |

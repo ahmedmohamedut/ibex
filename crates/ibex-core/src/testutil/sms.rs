@@ -166,6 +166,7 @@ pub fn setup_sql() -> String {
              filename TEXT,
              uti TEXT,
              mime_type TEXT,
+             transfer_name TEXT,
              transfer_state INTEGER DEFAULT 0,
              is_outgoing INTEGER DEFAULT 0,
              total_bytes INTEGER DEFAULT 0,
@@ -362,6 +363,65 @@ pub fn address_book_sql() -> &'static str {
      INSERT INTO ABMultiValue (record_id, property, value) VALUES (1, 4, 'Ada@Example.com');
      INSERT INTO ABMultiValue (record_id, property, value) VALUES (2, 3, '+44 7700 900123');
      INSERT INTO ABMultiValue (record_id, property, value) VALUES (3, 3, '+15550001003');"
+}
+
+/// SQL for an `sms.db` built to attack an exporter.
+///
+/// Every string here is chosen to break out of HTML or to be executed by a
+/// spreadsheet. It is all synthetic; nothing resembles real personal data.
+pub fn hostile_sql() -> String {
+    let base = chrono::DateTime::parse_from_rfc3339("2026-11-01T10:00:00Z")
+        .expect("a valid literal")
+        .with_timezone(&chrono::Utc);
+    let at = |minutes: i64| to_apple_nanos(base + chrono::Duration::minutes(minutes));
+
+    // The same schema as `setup_sql`, with hostile content.
+    let mut sql = setup_sql();
+
+    // A chat whose *name* is an injection attempt, and whose handle is too.
+    sql.push_str(
+        "INSERT INTO handle (id, service) VALUES ('<img src=x onerror=alert(1)>', 'SMS');
+         INSERT INTO chat (guid, style, chat_identifier, service_name, display_name)
+         VALUES ('SMS;-;hostile', 45, 'hostile', 'SMS',
+                 '<script>alert(\"name\")</script>');
+         INSERT INTO chat_handle_join (chat_id, handle_id)
+         VALUES (3, (SELECT ROWID FROM handle WHERE id = '<img src=x onerror=alert(1)>'));\n",
+    );
+
+    // Messages designed to escape HTML, and one a spreadsheet would run.
+    let hostile = [
+        ("HOSTILE-0001", "<script>alert('body')</script>", 0),
+        ("HOSTILE-0002", "<img src=x onerror=\"alert(1)\">", 1),
+        ("HOSTILE-0003", "javascript:alert(1)", 2),
+        ("HOSTILE-0004", "=SUM(1+1)+cmd|''/c calc''!A1", 3),
+        ("HOSTILE-0005", "quote \" and comma , and\nnewline", 4),
+        ("HOSTILE-0006", "close attr\" onerror=\"alert(1)", 5),
+    ];
+    for (guid, text, minutes) in hostile {
+        sql.push_str(&format!(
+            "INSERT INTO message (guid, text, handle_id, is_from_me, service, date)
+             VALUES ('{guid}', '{}', (SELECT ROWID FROM handle WHERE id = '<img src=x onerror=alert(1)>'),
+                     0, 'SMS', {});
+             INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (3, (SELECT ROWID FROM message WHERE guid = '{guid}'), {});\n",
+            text.replace('\'', "''"),
+            at(minutes),
+            at(minutes)
+        ));
+    }
+
+    // An attachment whose *file name* tries to break out of an attribute.
+    sql.push_str(&format!(
+        "INSERT INTO attachment (guid, filename, mime_type, total_bytes)
+         VALUES ('HOSTILE-ATT-0001', '~/{PRESENT_ATTACHMENT}', 'image/png', 70);
+         UPDATE attachment SET transfer_name = 'x\" onerror=\"alert(1).png'
+         WHERE guid = 'HOSTILE-ATT-0001';
+         INSERT INTO message_attachment_join (message_id, attachment_id)
+         VALUES ((SELECT ROWID FROM message WHERE guid = 'HOSTILE-0001'),
+                 (SELECT ROWID FROM attachment WHERE guid = 'HOSTILE-ATT-0001'));\n"
+    ));
+
+    sql
 }
 
 #[cfg(test)]
