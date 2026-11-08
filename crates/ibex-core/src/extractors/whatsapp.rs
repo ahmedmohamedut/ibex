@@ -209,10 +209,19 @@ impl<'a> WhatsAppDb<'a> {
             |r| r.get(0),
         )?;
 
+        // The count is the number of messages actually present, not
+        // `ZMESSAGECOUNTER`. That column is WhatsApp's own bookkeeping and in
+        // the real backup it disagreed with the rows for *every one* of the
+        // 1,107 chats — usually by one to three — so showing it made the list
+        // contradict both the thread and the export. One grouped join keeps
+        // this to a single pass.
         let sql = format!(
             "SELECT s.Z_PK, s.ZCONTACTJID, s.ZPARTNERNAME, s.ZSESSIONTYPE,
-                    s.ZMESSAGECOUNTER, s.ZLASTMESSAGEDATE, s.ZLASTMESSAGETEXT
+                    coalesce(counts.n, 0), s.ZLASTMESSAGEDATE, s.ZLASTMESSAGETEXT
              FROM ZWACHATSESSION s
+             LEFT JOIN (SELECT ZCHATSESSION AS session, count(*) AS n
+                        FROM ZWAMESSAGE GROUP BY ZCHATSESSION) counts
+                    ON counts.session = s.Z_PK
              WHERE {filter}
              ORDER BY s.ZLASTMESSAGEDATE IS NULL, s.ZLASTMESSAGEDATE DESC, s.Z_PK DESC
              LIMIT ?1 OFFSET ?2"
@@ -802,6 +811,31 @@ mod tests {
         assert_eq!(thread.messages.len(), 2);
     }
 
+    /// Found by exporting real data: `ZMESSAGECOUNTER` disagreed with the
+    /// actual rows for every chat in the backup, so the list contradicted the
+    /// thread and the export.
+    #[test]
+    fn the_chat_count_matches_the_messages_actually_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = open_fixture(tmp.path());
+        let db = WhatsAppDb::open(&backup).unwrap();
+
+        let chats = db.list_conversations(Page::default(), true).unwrap();
+        for chat in &chats.items {
+            let thread = db
+                .list_messages(&chat.id, MessageCursor::first(1000))
+                .unwrap();
+            assert_eq!(
+                chat.message_count as usize,
+                thread.messages.len(),
+                "chat {} says {} messages but lists {}",
+                chat.id,
+                chat.message_count,
+                thread.messages.len()
+            );
+        }
+    }
+
     #[test]
     fn conversations_carry_names_counts_previews_and_members() {
         let tmp = tempfile::tempdir().unwrap();
@@ -816,7 +850,12 @@ mod tests {
             .expect("the 1:1 chat should be listed");
         assert!(!direct.is_group);
         assert_eq!(direct.display_name.as_deref(), Some("Ada Lovelace"));
-        assert_eq!(direct.message_count, 10);
+        // Derived from the thread rather than hard-coded, so this cannot drift
+        // from the fixture again.
+        let thread = db
+            .list_messages(&direct.id, MessageCursor::first(1000))
+            .unwrap();
+        assert_eq!(direct.message_count as usize, thread.messages.len());
         assert_eq!(
             direct.last_message_preview.as_deref(),
             Some("Fixture last message"),

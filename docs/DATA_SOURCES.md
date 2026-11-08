@@ -155,7 +155,7 @@ Key tables:
 
 | Table | Notes |
 |---|---|
-| `ZWACHATSESSION` | `Z_PK`, `ZCONTACTJID` (`<number>@s.whatsapp.net`, groups `@g.us`), `ZPARTNERNAME`, `ZSESSIONTYPE` (0 = 1:1, 1 = group, 2 = broadcast, 3 = status), `ZLASTMESSAGEDATE`, `ZMESSAGECOUNTER`, `ZARCHIVED` |
+| `ZWACHATSESSION` | `Z_PK`, `ZCONTACTJID` (`<number>@s.whatsapp.net`, groups `@g.us`), `ZPARTNERNAME`, `ZSESSIONTYPE` (0 = 1:1, 1 = group, 2 = broadcast, 3 = status), `ZLASTMESSAGEDATE`, `ZMESSAGECOUNTER` (**stale — do not trust; see the 2026-11-08 M4 note**), `ZARCHIVED` |
 | `ZWAMESSAGE` | `Z_PK`, `ZCHATSESSION`, `ZISFROMME`, `ZFROMJID`, `ZTOJID`, `ZTEXT`, `ZMESSAGEDATE`, `ZSENTDATE`, `ZMESSAGETYPE`, `ZGROUPMEMBER`, `ZMEDIAITEM`, `ZPARENTMESSAGE`, `ZSTANZAID`, `ZMESSAGESTATUS`, `ZSTARRED` |
 | `ZWAMEDIAITEM` | `Z_PK`, `ZMESSAGE`, `ZMEDIALOCALPATH`, `ZTHUMBNAILLOCALPATH`, `ZTITLE`, `ZFILESIZE`, `ZMOVIEDURATION`, `ZLATITUDE`, `ZLONGITUDE`, `ZVCARDNAME`, `ZVCARDSTRING` |
 | `ZWAGROUPMEMBER` | `Z_PK`, `ZCHATSESSION`, `ZMEMBERJID`, `ZCONTACTNAME`, `ZFIRSTNAME` |
@@ -228,6 +228,28 @@ Note: if the backup is iOS 13+ and an app opted out of backup, its documents sim
 | Telegram, Signal | not in backups in a readable form (Signal excludes itself; Telegram stores in its own encrypted DB) |
 
 ## Learned facts log
+
+### 2026-11-08: `ZMESSAGECOUNTER` is stale (M4, found by exporting)
+
+The chat list said a conversation held **4,493** messages; exporting it wrote **4,490**. The
+count came from `ZWACHATSESSION.ZMESSAGECOUNTER`, which WhatsApp maintains itself. Checking it
+against the rows actually present:
+
+```sql
+SELECT count(*) FROM ZWACHATSESSION s
+  LEFT JOIN (SELECT ZCHATSESSION AS session, count(*) AS n
+             FROM ZWAMESSAGE GROUP BY ZCHATSESSION) c ON c.session = s.Z_PK
+ WHERE coalesce(c.n, 0) <> s.ZMESSAGECOUNTER;
+```
+
+**1,107 of 1,107** conversations disagreed — every single one. The counter appears to track
+messages the app has seen over the chat's life, not rows in this database, so deletions,
+expiring messages and partial syncs all push it out. ibex therefore derives the count from a
+grouped join on `ZWAMESSAGE`, which costs one extra scan and makes the list agree with the
+thread and the export. A real-data test asserts the reconciliation over 40 chats.
+
+The general lesson for Core Data stores: **a stored aggregate is a cache, not a fact.** Prefer
+counting the rows you are about to show.
 
 ### 2026-11-08: WhatsApp, measured on the real backup (M3)
 

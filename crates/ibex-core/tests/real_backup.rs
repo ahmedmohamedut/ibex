@@ -521,6 +521,28 @@ fn whatsapp_chat_counts_reconcile_and_the_toggle_adds_feeds() {
         everything.total >= conversations.total,
         "the toggle must only ever add sessions"
     );
+
+    // Each chat's count must be the rows actually present, not WhatsApp's own
+    // ZMESSAGECOUNTER: in this backup that column disagreed with reality for
+    // every single chat, which made the list contradict the thread.
+    let mut checked = 0;
+    for chat in conversations.items.iter().take(40) {
+        let actual: i64 = db
+            .connection()
+            .query_one(
+                "SELECT count(*) FROM ZWAMESSAGE WHERE ZCHATSESSION = ?1",
+                [chat.id.parse::<i64>().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            chat.message_count, actual as u64,
+            "chat {} reports {} but holds {actual}",
+            chat.id, chat.message_count
+        );
+        checked += 1;
+    }
+    println!("{checked} chat counts reconciled against the database");
 }
 
 #[test]
