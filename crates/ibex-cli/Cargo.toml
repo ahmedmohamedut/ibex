@@ -3,7 +3,8 @@ name = "ibex-cli"
 description = "Command-line tool over ibex-core, for debugging backups"
 version.workspace = true
 edition.workspace = true
-license = "GPL-3.0-or-later"
+license.workspace = true
+repository.workspace = true
 
 [features]
 # Writes a synthetic backup to disk, for exercising the CLI without a real one.

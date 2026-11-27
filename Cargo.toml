@@ -5,6 +5,8 @@ members = ["src-tauri", "crates/ibex-core", "crates/ibex-cli"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ahmedmohamedut/ibex"
 
 [workspace.dependencies]
 ibex-core = { path = "crates/ibex-core" }

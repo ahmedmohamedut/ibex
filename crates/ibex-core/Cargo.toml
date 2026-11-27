@@ -4,7 +4,8 @@ description = "Backup parsing, extractors and exporters for ibex. No UI dependen
 version.workspace = true
 edition.workspace = true
 # GPL because of imessage-database; see docs/DATA_SOURCES.md.
-license = "GPL-3.0-or-later"
+license.workspace = true
+repository.workspace = true
 
 [features]
 # Synthetic backup builder used by tests and by `ibex-cli fixture`.

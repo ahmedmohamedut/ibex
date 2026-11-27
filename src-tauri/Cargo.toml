@@ -4,7 +4,8 @@ description = "ibex: browse and export data from iPhone backups"
 authors = ["Ahmed Mohamed <ahmedeidx@gmail.com>"]
 version.workspace = true
 edition.workspace = true
-license = "GPL-3.0-or-later"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
