@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useHexPreview, useTextPreview } from "../../api/raw";
-import { fileUrl } from "../../api/media";
+import { fileUrl, thumbUrl } from "../../api/media";
 import type { FileInfo } from "../../bindings/FileInfo";
 import { EmptyState, Spinner } from "../EmptyState";
 import { formatBytes } from "../format";
@@ -103,6 +103,33 @@ function TextPreviewView(props: { handle: string; fileId: string; isPlist: boole
 }
 
 /**
+ * An image the webview cannot decode itself (HEIC/HEIF), shown through the
+ * `ibex://thumb/` route, which converts it to JPEG. Formats that route cannot
+ * convert either fall back to an explanation.
+ */
+function ConvertedImage(props: { src: string; alt: string; mime?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <EmptyState
+        title="No preview for this image type"
+        detail={`This is ${props.mime ?? "an image"}, which ibex cannot display. You can still save the file out.`}
+      />
+    );
+  }
+  return (
+    <div className="preview__canvas">
+      <img
+        className="preview__image"
+        src={props.src}
+        alt={props.alt}
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+}
+
+/**
  * The detail pane's preview, chosen by the type Rust sniffed.
  *
  * Media and images load over `ibex://` rather than through `invoke`, so the
@@ -159,9 +186,11 @@ export function PreviewPane(props: { handle: string; info: FileInfo }) {
       return (
         <div className="preview">
           {hexToggle}
-          <EmptyState
-            title="Preview needs HEIC support"
-            detail={`This is ${info.sniffed?.mime ?? "an image"}, which this webview cannot decode. Milestone M5 adds conversion. You can still save the file out.`}
+          <ConvertedImage
+            key={info.fileId}
+            src={thumbUrl(handle, info.fileId)}
+            alt={info.name}
+            mime={info.sniffed?.mime}
           />
         </div>
       );
