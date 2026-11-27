@@ -41,7 +41,7 @@ Goal: open a backup in the GUI and browse every file.
 - [x] Layout: top bar, sidebar, list/detail panes; tokens.css; light/dark
 - [x] Welcome screen: open folder dialog, recents, validation errors
 - [x] Overview screen (device info, domain count, total size)
-- [~] Raw view: domain list, path tree, file table, previews (image, text, plist pretty-print, hex, audio/video, PDF) — all previews implemented; **HEIC shows an explanatory placeholder** rather than an image, because WebKitGTK cannot decode it. Conversion is M5's thumbnail work.
+- [x] Raw view: domain list, path tree, file table, previews (image, text, plist pretty-print, hex, audio/video, PDF). HEIC/HEIF previews go through M5's `ibex://thumb/` conversion, since WebKitGTK cannot decode them; other undecodable image types fall back to an explanation.
 - [x] "Save as…" for a single file (keeps original name and mtime)
 
 **Done when:** you can open your backup, browse to any file, preview it and save it out.
@@ -79,8 +79,8 @@ Notes:
 
 Notes:
 - **ibex is now GPL-3.0-or-later**, because `imessage-database` is. `LICENSE` added, `license`
-  fields set on all three crates. **README.md is mode 444, so its "Licence: to be decided"
-  section is still wrong** — the replacement text is in the M2 summary and needs pasting by hand.
+  fields set on all three crates. README's licence section was brought up to date in the
+  pre-release polish pass.
 - Verified end to end against the synthetic fixture: a message whose text exists *only* as an
   `attributedBody` typedstream blob round-trips to "Text that lives only in attributedBody", which
   is the whole reason for taking the crate on.
