@@ -20,7 +20,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' ibex: http://ibex.localhost; media-src 'self' ibex: http://ibex.localhost; frame-src ibex: http://ibex.localhost; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "devCsp": null
     }
   },
   "bundle": {
@@ -35,7 +36,7 @@
     ],
     "category": "Utility",
     "shortDescription": "Browse and export data from iPhone backups",
-    "longDescription": "ibex opens an iTunes/Finder-style iPhone backup folder, including an encrypted one, and lets you read what is inside it: SMS and iMessage conversations, WhatsApp chats with media and voice notes, and every file in the backup by domain. Conversations export to offline HTML, CSV, JSON or their original files.\nThe backup folder is only ever opened read-only, and ibex makes no network connections of any kind.",
+    "longDescription": "ibex opens a Finder/iTunes-style iPhone backup folder, including an encrypted one, and lets you read what is inside it: SMS and iMessage conversations, WhatsApp chats with media and voice notes, the camera roll, Voice Memos, Files and app documents, contacts, call history, and every file in the backup by domain, with full-text search across messages. Data exports to offline HTML, CSV, JSON, vCard or the original files.\nThe backup folder is only ever opened read-only, and ibex makes no network connections of any kind.",
     "copyright": "Copyright (C) 2026 Ahmed Mohamed",
     "license": "GPL-3.0-or-later",
     "licenseFile": "../LICENSE",
